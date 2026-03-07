@@ -1,7 +1,11 @@
 pub mod batch;
+mod batches;
 pub mod config;
+pub mod dashboard;
 pub mod entity;
 pub mod github;
+mod merge_events;
+mod pull_requests;
 pub mod queue;
 
 use std::sync::Arc;
@@ -10,24 +14,11 @@ use rapina::cache::CacheConfig;
 use rapina::database::DatabaseConfig;
 use rapina::middleware::RequestLogMiddleware;
 use rapina::prelude::*;
-use rapina::schemars;
 
 mod migrations;
 
 use config::app::AppConfig;
 use github::client::GitHubClient;
-
-#[derive(Serialize, JsonSchema)]
-struct MessageResponse {
-    message: String,
-}
-
-#[get("/")]
-async fn hello() -> Json<MessageResponse> {
-    Json(MessageResponse {
-        message: "Hello from Rapina!".to_string(),
-    })
-}
 
 pub async fn build_app(config: AppConfig, enable_tracing: bool) -> Rapina {
     let db_config = DatabaseConfig::new(&config.database_url);
