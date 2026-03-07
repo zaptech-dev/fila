@@ -1,0 +1,32 @@
+use rapina::prelude::*;
+
+#[derive(Config, Clone)]
+pub struct AppConfig {
+    #[env = "DATABASE_URL"]
+    pub database_url: String,
+
+    #[env = "SERVER_PORT"]
+    #[default = "8000"]
+    pub server_port: u16,
+
+    #[env = "HOST"]
+    #[default = "127.0.0.1"]
+    pub host: String,
+
+    #[env = "GITHUB_APP_ID"]
+    pub github_app_id: String,
+
+    #[env = "GITHUB_PRIVATE_KEY"]
+    pub github_private_key: String,
+
+    #[env = "GITHUB_WEBHOOK_SECRET"]
+    pub github_webhook_secret: String,
+
+    #[env = "BATCH_SIZE"]
+    #[default = "5"]
+    pub batch_size: usize,
+
+    #[env = "BATCH_INTERVAL_SECS"]
+    #[default = 300]
+    pub batch_interval_secs: usize,
+}
