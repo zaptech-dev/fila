@@ -2,11 +2,15 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use hmac::{Hmac, Mac};
 use rapina::prelude::*;
 use rapina::testing::TestClient;
+use sha2::Sha256;
 
 use fila::config::app::AppConfig;
 use fila::github::client::GitHubClient;
+
+const TEST_SECRET: &str = "test-secret";
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -24,7 +28,7 @@ async fn build_test_app(db_path: &str) -> TestClient {
         host: "127.0.0.1".to_string(),
         github_app_id: "test-app-id".to_string(),
         github_private_key: "test-private-key".to_string(),
-        github_webhook_secret: "test-secret".to_string(),
+        github_webhook_secret: TEST_SECRET.to_string(),
         merge_strategy: "batch".to_string(),
         batch_size: 5,
         batch_interval_secs: 300,
@@ -39,6 +43,14 @@ async fn build_test_app(db_path: &str) -> TestClient {
     ));
     let app = fila::build_app(config, github, false).await;
     TestClient::new(app).await
+}
+
+fn sign_payload(payload: &serde_json::Value) -> String {
+    let body = serde_json::to_vec(payload).unwrap();
+    let mut mac = Hmac::<Sha256>::new_from_slice(TEST_SECRET.as_bytes()).unwrap();
+    mac.update(&body);
+    let result = mac.finalize().into_bytes();
+    format!("sha256={}", hex::encode(result))
 }
 
 /// Insert a queued PR directly into the DB for test setup.
@@ -109,10 +121,14 @@ async fn test_comment_cancel_dequeues_pr() {
     let client = build_test_app(&db_path).await;
     insert_test_pr(&db_path, 10, "abc123");
 
+    let payload = comment_payload("@fila cancel", 10);
+    let signature = sign_payload(&payload);
+
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "issue_comment")
-        .json(&comment_payload("@fila cancel", 10))
+        .header("X-Hub-Signature-256", &signature)
+        .json(&payload)
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -129,10 +145,14 @@ async fn test_pr_close_dequeues() {
     let client = build_test_app(&db_path).await;
     insert_test_pr(&db_path, 20, "abc123");
 
+    let payload = pr_event_payload("closed", 20, "abc123");
+    let signature = sign_payload(&payload);
+
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "pull_request")
-        .json(&pr_event_payload("closed", 20, "abc123"))
+        .header("X-Hub-Signature-256", &signature)
+        .json(&payload)
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -149,10 +169,14 @@ async fn test_pr_sync_updates_sha() {
     let client = build_test_app(&db_path).await;
     insert_test_pr(&db_path, 30, "abc123");
 
+    let payload = pr_event_payload("synchronize", 30, "new-sha-456");
+    let signature = sign_payload(&payload);
+
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "pull_request")
-        .json(&pr_event_payload("synchronize", 30, "new-sha-456"))
+        .header("X-Hub-Signature-256", &signature)
+        .json(&payload)
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -169,7 +193,6 @@ async fn test_comment_on_issue_ignored() {
     let db_path = next_db_path();
     let client = build_test_app(&db_path).await;
 
-    // Comment on a regular issue (no pull_request field)
     let payload = serde_json::json!({
         "action": "created",
         "installation": { "id": 12345 },
@@ -186,10 +209,12 @@ async fn test_comment_on_issue_ignored() {
             "user": { "login": "test-reviewer" }
         }
     });
+    let signature = sign_payload(&payload);
 
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "issue_comment")
+        .header("X-Hub-Signature-256", &signature)
         .json(&payload)
         .send()
         .await;
@@ -205,10 +230,14 @@ async fn test_random_comment_ignored() {
     let db_path = next_db_path();
     let client = build_test_app(&db_path).await;
 
+    let payload = comment_payload("looks good to me!", 10);
+    let signature = sign_payload(&payload);
+
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "issue_comment")
-        .json(&comment_payload("looks good to me!", 10))
+        .header("X-Hub-Signature-256", &signature)
+        .json(&payload)
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -216,6 +245,35 @@ async fn test_random_comment_ignored() {
     let res = client.get("/pull_requests").send().await;
     let prs: Vec<serde_json::Value> = res.json();
     assert_eq!(prs.len(), 0);
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_missing_signature() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+
+    let res = client
+        .post("/webhooks/github")
+        .header("X-GitHub-Event", "issue_comment")
+        .json(&comment_payload("@fila cancel", 10))
+        .send()
+        .await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_webhook_rejects_invalid_signature() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+
+    let res = client
+        .post("/webhooks/github")
+        .header("X-GitHub-Event", "issue_comment")
+        .header("X-Hub-Signature-256", "sha256=deadbeef")
+        .json(&comment_payload("@fila cancel", 10))
+        .send()
+        .await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
