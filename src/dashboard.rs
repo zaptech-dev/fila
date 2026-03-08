@@ -11,12 +11,13 @@ use crate::entity::batch::Column as BatchColumn;
 use crate::entity::merge_event::Column as EventColumn;
 use crate::entity::pull_request::Column as PrColumn;
 use crate::entity::{Batch, MergeEvent, PullRequest};
+use crate::types::PrStatus;
 
 #[public]
 #[get("/")]
 pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
     let queued = PullRequest::find()
-        .filter(PrColumn::Status.eq("queued"))
+        .filter(PrColumn::Status.eq(PrStatus::Queued.as_ref()))
         .order_by_desc(PrColumn::Priority)
         .order_by_asc(PrColumn::QueuedAt)
         .all(db.conn())

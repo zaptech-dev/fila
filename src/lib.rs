@@ -3,10 +3,12 @@ mod batches;
 pub mod config;
 pub mod dashboard;
 pub mod entity;
+pub mod errors;
 pub mod github;
 mod merge_events;
 mod pull_requests;
 pub mod queue;
+pub mod types;
 
 use std::sync::Arc;
 

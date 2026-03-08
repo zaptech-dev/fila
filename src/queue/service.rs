@@ -11,6 +11,7 @@ use crate::entity::pull_request::{
     ActiveModel as PrActiveModel, Column as PrColumn, Model as PrModel,
 };
 use crate::github::types::GhPullRequest;
+use crate::types::{BatchStatus, PrStatus};
 
 /// Find a PR currently in the queue.
 pub async fn find_queued_pr(
@@ -23,7 +24,7 @@ pub async fn find_queued_pr(
         .filter(PrColumn::RepoOwner.eq(owner))
         .filter(PrColumn::RepoName.eq(repo))
         .filter(PrColumn::PrNumber.eq(pr_number))
-        .filter(PrColumn::Status.eq("queued"))
+        .filter(PrColumn::Status.eq(PrStatus::Queued.as_ref()))
         .one(db.conn())
         .await
         .map_err(|e| DbError(e).into_api_error())
@@ -48,7 +49,7 @@ pub async fn enqueue(
         title: Set(pr.title.clone()),
         author: Set(pr.user.login.clone()),
         head_sha: Set(pr.head.sha.clone()),
-        status: Set("queued".to_string()),
+        status: Set(PrStatus::Queued.to_string()),
         priority: Set(0),
         installation_id: Set(installation_id),
         queued_at: Set(Some(chrono::Utc::now())),
@@ -75,7 +76,7 @@ pub async fn dequeue(
 
     if let Some(pr) = existing {
         let mut active = pr.into_active_model();
-        active.status = Set("cancelled".to_string());
+        active.status = Set(PrStatus::Cancelled.to_string());
         active
             .update(db.conn())
             .await
@@ -110,7 +111,7 @@ pub async fn update_sha(
 /// Get all queued PRs ordered by priority (desc) then queued_at (asc).
 pub async fn get_queue(db: &Db) -> std::result::Result<Vec<PrModel>, Error> {
     PullRequest::find()
-        .filter(PrColumn::Status.eq("queued"))
+        .filter(PrColumn::Status.eq(PrStatus::Queued.as_ref()))
         .order_by_desc(PrColumn::Priority)
         .order_by_asc(PrColumn::QueuedAt)
         .all(db.conn())
@@ -122,7 +123,7 @@ pub async fn get_queue(db: &Db) -> std::result::Result<Vec<PrModel>, Error> {
 pub async fn get_next_queued(db: &Db) -> std::result::Result<Option<PrModel>, Error> {
     use rapina::sea_orm::QuerySelect;
     PullRequest::find()
-        .filter(PrColumn::Status.eq("queued"))
+        .filter(PrColumn::Status.eq(PrStatus::Queued.as_ref()))
         .order_by_desc(PrColumn::Priority)
         .order_by_asc(PrColumn::QueuedAt)
         .limit(1)
@@ -134,7 +135,7 @@ pub async fn get_next_queued(db: &Db) -> std::result::Result<Option<PrModel>, Er
 /// Mark a PR as currently being tested.
 pub async fn mark_testing(db: &Db, pr: &PrModel) -> std::result::Result<(), Error> {
     let mut active = pr.clone().into_active_model();
-    active.status = Set("testing".to_string());
+    active.status = Set(PrStatus::Testing.to_string());
     active
         .update(db.conn())
         .await
@@ -157,7 +158,7 @@ pub async fn create_batch(
 
     // Create the batch record
     let batch = BatchActiveModel {
-        status: Set("pending".to_string()),
+        status: Set(BatchStatus::Pending.to_string()),
         completed_at: Set(None),
         ..Default::default()
     };
@@ -170,7 +171,7 @@ pub async fn create_batch(
     // Mark each PR as batched and log the event
     for pr in &batch_prs {
         let mut active = pr.clone().into_active_model();
-        active.status = Set("batched".to_string());
+        active.status = Set(PrStatus::Batched.to_string());
         active
             .update(db.conn())
             .await
@@ -185,7 +186,7 @@ pub async fn create_batch(
 /// Mark a PR as merged.
 pub async fn mark_merged(db: &Db, pr: &PrModel) -> std::result::Result<(), Error> {
     let mut active = pr.clone().into_active_model();
-    active.status = Set("merged".to_string());
+    active.status = Set(PrStatus::Merged.to_string());
     active.merged_at = Set(Some(chrono::Utc::now()));
     active
         .update(db.conn())
@@ -197,7 +198,7 @@ pub async fn mark_merged(db: &Db, pr: &PrModel) -> std::result::Result<(), Error
 /// Mark a PR as failed.
 pub async fn mark_failed(db: &Db, pr: &PrModel, reason: &str) -> std::result::Result<(), Error> {
     let mut active = pr.clone().into_active_model();
-    active.status = Set("failed".to_string());
+    active.status = Set(PrStatus::Failed.to_string());
     active
         .update(db.conn())
         .await
@@ -211,11 +212,11 @@ pub async fn mark_failed(db: &Db, pr: &PrModel, reason: &str) -> std::result::Re
 pub async fn update_batch_status(
     db: &Db,
     batch: &BatchModel,
-    status: &str,
+    status: BatchStatus,
 ) -> std::result::Result<(), Error> {
     let mut active = batch.clone().into_active_model();
     active.status = Set(status.to_string());
-    if status == "done" || status == "failed" {
+    if matches!(status, BatchStatus::Done | BatchStatus::Failed) {
         active.completed_at = Set(Some(chrono::Utc::now()));
     }
     active
