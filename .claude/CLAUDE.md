@@ -1,133 +1,124 @@
-# Rapina Project Instructions
+# Fila — GitHub Merge Queue
 
-This is a Rust web application built with the Rapina framework.
+Single Rust binary built with Rapina. Receives GitHub webhooks, queues PRs,
+merges them into a fila/merge staging branch, waits for CI, fast-forwards main.
 
-## Framework Overview
+## Architecture
 
-Rapina is an opinionated Rust web framework built on hyper. Routes are protected by default (JWT auth) unless marked `#[public]`. All response types must derive `Serialize` + `JsonSchema` for OpenAPI generation. Error responses always include a `trace_id`.
+```
+GitHub webhook → src/github/webhook.rs (HMAC verified)
+                    ↓
+              src/queue/service.rs (enqueue, dequeue, status transitions)
+                    ↓
+              src/queue/runner.rs (background tokio task, polls on interval)
+                    ↓
+              src/github/client.rs (GitHub API: merges, refs, comments, checks)
+```
+
+## Domain model
+
+Status enums live in `src/types.rs`:
+- `PrStatus`: Queued → Testing → Merged | Failed | Cancelled
+- `BatchStatus`: Pending → Testing → Done | Failed
+- Always use enum variants, never raw strings for statuses
+
+Commands (via GitHub comments or review body):
+- `@fila ship` — add PR to merge queue
+- `@fila cancel` — remove PR from queue
+- `@fila status` — show current queue
+
+Merge strategies (via MERGE_STRATEGY env):
+- `batch` (default) — merge all queued PRs together, run CI once, fast-forward once
+- `sequential` — one PR at a time (bors-style)
+
+## Key files
+
+- `src/github/webhook.rs` — webhook router, handles PR/comment/review/check_suite events
+- `src/github/signature.rs` — `SignedBody<T>` extractor, HMAC-SHA256 verification
+- `src/github/client.rs` — GitHub API client (JWT auth, installation token caching, merge/ref/comment operations)
+- `src/github/types.rs` — GitHub API and webhook payload type definitions
+- `src/queue/service.rs` — queue operations (enqueue, dequeue, mark_testing/merged/failed, create_batch, log_event)
+- `src/queue/runner.rs` — background merge loop, batch and sequential strategies, CI polling
+- `src/dashboard.rs` — HTML dashboard at GET / (public, no auth)
+- `src/entity.rs` — SeaORM schema: PullRequest, Batch, MergeEvent
+- `src/config/app.rs` — AppConfig with env-driven loading
+- `src/types.rs` — PrStatus, BatchStatus enums with Display/AsRef/From impls
+- `src/errors.rs` — shared CrudError for all CRUD handler modules
+- `src/lib.rs` — build_app() takes AppConfig + Arc<GitHubClient>, runs migrations, discovers routes
+- `src/main.rs` — creates GitHubClient once, spawns runner, starts server
+
+## Project structure
+
+```
+src/
+├── main.rs              # Entry point, single GitHubClient creation
+├── lib.rs               # build_app(config, github, enable_tracing)
+├── entity.rs            # PullRequest, Batch, MergeEvent (schema! macro)
+├── types.rs             # PrStatus, BatchStatus enums
+├── errors.rs            # CrudError (shared by all CRUD handlers)
+├── dashboard.rs         # GET / — HTML dashboard
+├── config/
+│   └── app.rs           # AppConfig (env vars)
+├── github/
+│   ├── client.rs        # GitHubClient (JWT, tokens, API calls)
+│   ├── types.rs         # GitHub API types, webhook payloads
+│   ├── webhook.rs       # POST /webhooks/github handler
+│   └── signature.rs     # SignedBody<T> HMAC extractor
+├── queue/
+│   ├── service.rs       # Queue operations
+│   └── runner.rs        # Background merge runner
+├── pull_requests/
+│   └── handlers.rs      # GET /pull_requests, GET /pull_requests/:id
+├── batches/
+│   └── handlers.rs      # GET /batches, GET /batches/:id
+├── merge_events/
+│   └── handlers.rs      # GET /merge_events, GET /merge_events/:id
+└── migrations/          # SeaORM migrations
+```
 
 ## Conventions
 
-### Adding a new endpoint
+- Feature-first modules (plural: pull_requests/, batches/, merge_events/)
+- Status transitions via enums, never raw strings
+- Queue service functions take `&Db`, return `Result<_, Error>`
+- Runner has its own DB connection, spawns as tokio task
+- CRUD handlers use shared `CrudError` (no per-module error types)
+- All routes auto-discovered via `.discover()`
+- Public routes: `GET /` (dashboard), `POST /webhooks/github`
+- Webhooks verified via `SignedBody<T>` extractor (HMAC-SHA256)
+- Single `GitHubClient` created in main.rs, shared via `Arc`
 
-1. Create or edit the handler in `src/<feature>/handlers.rs`
-2. Use the proc macro: `#[get("/path")]`, `#[post("/path")]`, `#[put("/path")]`, `#[delete("/path")]`
-3. Mark public routes with `#[public]` above the method macro
-4. Use `#[errors(ErrorType)]` to document error responses for OpenAPI
-5. If using `.discover()`, the route is auto-registered. Otherwise add it to the router in `main.rs`
+## Testing
 
-### Extractors (in handler function signatures)
-
-```rust
-// Body (only one per handler)
-body: Json<T>              // JSON body, T: Deserialize + JsonSchema
-body: Validated<Json<T>>   // JSON body with validation, T: Deserialize + JsonSchema + Validate
-body: Form<T>              // Form data
-
-// Parts (multiple allowed)
-id: Path<i32>              // URL path param (:id syntax)
-params: Query<T>           // Query string
-headers: Headers           // Full header map
-state: State<T>            // App state
-user: CurrentUser          // Authenticated user (id, claims)
-ctx: Context               // Request context (trace_id, start_time)
-db: Db                     // Database connection (requires database feature)
-jar: Cookie<T>             // Cookie values
+```bash
+cargo test
 ```
 
-### Handler naming convention
-- `list_<resources>` — GET collection
-- `get_<resource>` — GET single item
-- `create_<resource>` — POST
-- `update_<resource>` — PUT
-- `delete_<resource>` — DELETE
+Integration tests in `tests/integration.rs`:
+- Use `TestClient` + sqlite3 for test data
+- Webhook tests generate HMAC signatures with `sign_payload()` helper
+- Test secret: "test-secret"
 
-### Builder pattern
-```rust
-Rapina::new()
-    .with_tracing(TracingConfig::new())
-    .middleware(RequestLogMiddleware::new())
-    .with_cors(CorsConfig::permissive())
-    .router(router)
-    .listen("127.0.0.1:3000")
-    .await
-```
+## Environment variables
 
-### Error handling pattern
-
-Each feature module has its own error type:
-
-```rust
-// src/todos/error.rs
-pub enum TodoError {
-    DbError(DbError),
-}
-
-impl IntoApiError for TodoError {
-    fn into_api_error(self) -> Error {
-        match self {
-            TodoError::DbError(e) => e.into_api_error(),
-        }
-    }
-}
-
-impl DocumentedError for TodoError {
-    fn error_variants() -> Vec<ErrorVariant> {
-        vec![
-            ErrorVariant { status: 404, code: "NOT_FOUND", description: "Todo not found" },
-            ErrorVariant { status: 500, code: "DATABASE_ERROR", description: "Database operation failed" },
-        ]
-    }
-}
-```
-
-Use `Error::not_found()`, `Error::bad_request()`, `Error::unauthorized()`, etc. for quick errors.
-
-### Project structure
-
-Feature-first modules. Each feature directory is plural:
-
-```
-src/todos/handlers.rs    # not src/handlers/todos.rs
-src/todos/dto.rs         # CreateTodo, UpdateTodo structs
-src/todos/error.rs       # TodoError enum
-src/todos/mod.rs         # pub mod dto; pub mod error; pub mod handlers;
-```
-
-Top-level shared files:
-- `src/entity.rs` — all database entities via `schema!` macro
-- `src/migrations/` — database migrations via `migrations!` macro
-
-### DTOs
-- Request types: `Create<Resource>`, `Update<Resource>` — derive `Deserialize` + `JsonSchema`
-- Response types: derive `Serialize` + `JsonSchema`
-- Update DTOs wrap fields in `Option<T>` for partial updates
-
-### Testing
-
-```rust
-use rapina::testing::TestClient;
-
-#[tokio::test]
-async fn test_hello() {
-    let app = Rapina::new().router(router);
-    let client = TestClient::new(app).await;
-
-    let res = client.get("/").send().await;
-    assert_eq!(res.status(), StatusCode::OK);
-
-    let body: MessageResponse = res.json();
-    assert_eq!(body.message, "Hello from Rapina!");
-}
-```
-
-`TestClient` supports `.get()`, `.post()`, `.put()`, `.delete()`, `.patch()`. Request builder has `.json()`, `.header()`, `.body()`. Response has `.status()`, `.json::<T>()`, `.text()`.
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| DATABASE_URL | yes | — | SQLite connection string |
+| GITHUB_APP_ID | yes | — | GitHub App ID |
+| GITHUB_PRIVATE_KEY | yes | — | GitHub App private key (PEM) |
+| GITHUB_WEBHOOK_SECRET | yes | — | HMAC secret for webhook verification |
+| MERGE_STRATEGY | no | batch | batch or sequential |
+| BATCH_SIZE | no | 5 | Max PRs per batch |
+| BATCH_INTERVAL_SECS | no | 10 | Seconds between runner cycles |
+| CI_TIMEOUT_SECS | no | 1800 | Max seconds to wait for CI |
+| POLL_INTERVAL_SECS | no | 15 | Seconds between CI poll checks |
+| DASHBOARD_URL | no | "" | URL for queue links in PR comments |
 
 ## Build & Run
 
 ```bash
-rapina dev              # development with auto-reload
-cargo build --release   # production build
-rapina doctor           # check for common issues
-rapina routes           # list all routes
+cargo build --release
+cargo test
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
 ```
