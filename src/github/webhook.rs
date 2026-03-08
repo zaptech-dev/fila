@@ -180,13 +180,7 @@ async fn handle_comment_event(
                 issue.number, comment.user.login,
             );
             let _ = github
-                .create_issue_comment(
-                    &token,
-                    &repo.owner.login,
-                    &repo.name,
-                    issue.number,
-                    &reply,
-                )
+                .create_issue_comment(&token, &repo.owner.login, &repo.name, issue.number, &reply)
                 .await;
         }
     } else if body == "@fila status" {
