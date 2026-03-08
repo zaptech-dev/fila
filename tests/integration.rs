@@ -42,7 +42,11 @@ fn insert_test_pr(db_path: &str, pr_number: i32, head_sha: &str) {
         .arg(&sql)
         .output()
         .expect("sqlite3 must be available");
-    assert!(output.status.success(), "sqlite3 insert failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "sqlite3 insert failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn comment_payload(body: &str, pr_number: i32) -> serde_json::Value {
@@ -212,12 +216,7 @@ async fn test_dashboard_returns_html() {
     let res = client.get("/").send().await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let content_type = res
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap();
+    let content_type = res.headers().get("content-type").unwrap().to_str().unwrap();
     assert!(content_type.contains("text/html"));
 
     let body = res.text();

@@ -89,14 +89,12 @@ pub async fn handle_webhook(
 }
 
 async fn handle_pr_event(payload: &WebhookPayload, db: &Db) -> std::result::Result<(), Error> {
-    let pr = payload
-        .pull_request
-        .as_ref()
-        .ok_or_else(|| WebhookError::InvalidPayload("Missing pull_request".into()).into_api_error())?;
-    let repo = payload
-        .repository
-        .as_ref()
-        .ok_or_else(|| WebhookError::InvalidPayload("Missing repository".into()).into_api_error())?;
+    let pr = payload.pull_request.as_ref().ok_or_else(|| {
+        WebhookError::InvalidPayload("Missing pull_request".into()).into_api_error()
+    })?;
+    let repo = payload.repository.as_ref().ok_or_else(|| {
+        WebhookError::InvalidPayload("Missing repository".into()).into_api_error()
+    })?;
 
     match payload.action.as_str() {
         "closed" => {
@@ -104,8 +102,7 @@ async fn handle_pr_event(payload: &WebhookPayload, db: &Db) -> std::result::Resu
             tracing::info!(pr = pr.number, "PR closed, removed from queue");
         }
         "synchronize" => {
-            service::update_sha(db, &repo.owner.login, &repo.name, pr.number, &pr.head.sha)
-                .await?;
+            service::update_sha(db, &repo.owner.login, &repo.name, pr.number, &pr.head.sha).await?;
             tracing::info!(pr = pr.number, sha = pr.head.sha, "PR head updated");
         }
         _ => {}
@@ -131,10 +128,9 @@ async fn handle_comment_event(
         .issue
         .as_ref()
         .ok_or_else(|| WebhookError::InvalidPayload("Missing issue".into()).into_api_error())?;
-    let repo = payload
-        .repository
-        .as_ref()
-        .ok_or_else(|| WebhookError::InvalidPayload("Missing repository".into()).into_api_error())?;
+    let repo = payload.repository.as_ref().ok_or_else(|| {
+        WebhookError::InvalidPayload("Missing repository".into()).into_api_error()
+    })?;
 
     // Only handle comments on PRs (issues with a pull_request field)
     if issue.pull_request.is_none() {
@@ -142,11 +138,7 @@ async fn handle_comment_event(
     }
 
     let body = comment.body.trim().to_lowercase();
-    let installation_id = payload
-        .installation
-        .as_ref()
-        .map(|i| i.id)
-        .unwrap_or(0);
+    let installation_id = payload.installation.as_ref().map(|i| i.id).unwrap_or(0);
 
     if body == "@fila ship" {
         let token = github
@@ -160,10 +152,18 @@ async fn handle_comment_event(
             .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
 
         service::enqueue(db, &repo.owner.login, &repo.name, &pr, installation_id).await?;
-        tracing::info!(pr = issue.number, user = comment.user.login, "PR added to merge queue via comment");
+        tracing::info!(
+            pr = issue.number,
+            user = comment.user.login,
+            "PR added to merge queue via comment"
+        );
     } else if body == "@fila cancel" {
         service::dequeue(db, &repo.owner.login, &repo.name, issue.number).await?;
-        tracing::info!(pr = issue.number, user = comment.user.login, "PR removed from merge queue via comment");
+        tracing::info!(
+            pr = issue.number,
+            user = comment.user.login,
+            "PR removed from merge queue via comment"
+        );
     }
 
     Ok(())
@@ -188,10 +188,9 @@ async fn handle_review_event(payload: &WebhookPayload, _db: &Db) -> std::result:
 }
 
 async fn handle_check_suite_event(payload: &WebhookPayload) -> std::result::Result<(), Error> {
-    let suite = payload
-        .check_suite
-        .as_ref()
-        .ok_or_else(|| WebhookError::InvalidPayload("Missing check_suite".into()).into_api_error())?;
+    let suite = payload.check_suite.as_ref().ok_or_else(|| {
+        WebhookError::InvalidPayload("Missing check_suite".into()).into_api_error()
+    })?;
 
     if payload.action != "completed" {
         return Ok(());
