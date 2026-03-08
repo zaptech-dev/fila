@@ -2,7 +2,7 @@
 
 A merge queue for GitHub, inspired by [bors](https://github.com/rust-lang/bors). Fila ensures your main branch only contains code that has been tested as a merge result — never untested combinations.
 
-"Fila" means "queue" in Portuguese.
+"Fila" means "queue" in Portuguese 🇧🇷
 
 ## Why
 
@@ -12,15 +12,22 @@ Fila solves this by testing the exact merge result before pushing to main. Every
 
 ## How it works
 
-When someone comments `@fila ship` on a PR:
+```
+  PR #1 ─┐
+  PR #2 ─┤   ┌──────────┐     ┌─────┐     ┌──────┐
+  PR #3 ─┼──▶│fila/merge │────▶│ CI  │────▶│ main │
+  PR #4 ─┤   └──────────┘     └─────┘     └──────┘
+  PR #5 ─┘   merge each        1 run      fast-forward
+```
 
-1. Fila adds the PR to its queue
-2. The runner picks all queued PRs and creates a temporary `fila/merge` branch from current `main`
-3. It merges each PR sequentially into `fila/merge`, producing the exact combined commit that would land on main
-4. CI runs once on `fila/merge` — testing all PRs together, not in isolation
-5. If CI passes, Fila fast-forwards `main` to the tested commit — one build for all queued PRs
-6. If CI fails, all PRs in the batch are marked as failed and the authors are notified
-7. If a PR has a merge conflict, it's skipped and marked as failed — the rest of the batch continues
+1. Someone comments `@fila ship` on a PR (or includes it in a review)
+2. Fila adds the PR to its queue and confirms with a comment
+3. The runner picks all queued PRs and creates a temporary `fila/merge` branch from current `main`
+4. It merges each PR sequentially into `fila/merge`, producing the exact combined commit that would land on main
+5. CI runs once on `fila/merge` — testing all PRs together, not in isolation
+6. If CI passes, Fila fast-forwards `main` to the tested commit — one build for all queued PRs
+7. If CI fails, all PRs in the batch are marked as failed and the authors are notified
+8. If a PR has a merge conflict, it's skipped and marked as failed — the rest of the batch continues
 
 ### Merge strategies
 
@@ -40,6 +47,8 @@ Comment on any PR to interact with Fila:
 | `@fila cancel` | Remove the PR from the queue |
 | `@fila status` | Show the current queue |
 
+`@fila ship` works in both regular comments and PR review bodies — approve and ship in one step.
+
 ## Installation
 
 ### 1. Create a GitHub App
@@ -47,16 +56,16 @@ Comment on any PR to interact with Fila:
 Go to **Settings > Developer settings > GitHub Apps > New GitHub App**.
 
 **Permissions (Repository):**
-- Contents: Read & write
-- Issues: Read & write
-- Pull requests: Read & write
-- Commit statuses: Read & write
-- Checks: Read
 
-**Subscribe to events:**
-- Check suite
-- Issue comment
-- Pull request
+| Permission | Access |
+|------------|--------|
+| Contents | Read & write |
+| Issues | Read & write |
+| Pull requests | Read & write |
+| Commit statuses | Read & write |
+| Checks | Read |
+
+**Subscribe to events:** Check suite, Issue comment, Pull request, Pull request review
 
 Generate a private key and note the App ID.
 
@@ -111,11 +120,12 @@ Fila is a single binary that connects to GitHub via webhooks and stores state in
 | `GITHUB_APP_ID` | GitHub App ID | required |
 | `GITHUB_PRIVATE_KEY` | GitHub App private key (PEM contents) | required |
 | `GITHUB_WEBHOOK_SECRET` | Webhook secret | required |
-| `MERGE_STRATEGY` | `batch` (all PRs at once) or `sequential` (one at a time) | `batch` |
+| `MERGE_STRATEGY` | `batch` or `sequential` | `batch` |
 | `BATCH_SIZE` | Max PRs per batch | `5` |
-| `BATCH_INTERVAL_SECS` | How often to check for queued PRs | `10` |
-| `CI_TIMEOUT_SECS` | Max time to wait for CI | `1800` |
-| `POLL_INTERVAL_SECS` | How often to poll CI status | `15` |
+| `BATCH_INTERVAL_SECS` | How often to check for queued PRs (seconds) | `10` |
+| `CI_TIMEOUT_SECS` | Max time to wait for CI (seconds) | `1800` |
+| `POLL_INTERVAL_SECS` | How often to poll CI status (seconds) | `15` |
+| `DASHBOARD_URL` | URL for queue link in PR comments | — |
 
 ```bash
 # .env
@@ -131,10 +141,12 @@ cargo run
 
 The dashboard is available at `http://localhost:8000/`.
 
-### Docker
+### Deploy
+
+**Docker:**
 
 ```dockerfile
-FROM rust:latest AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release
@@ -145,20 +157,33 @@ COPY --from=builder /app/target/release/fila /usr/local/bin/fila
 CMD ["fila"]
 ```
 
-### Railway
+**Railway:**
 
 1. Connect your repository
-2. Set the environment variables in Railway's dashboard
-3. Set the webhook URL to your Railway deployment URL + `/webhooks/github`
+2. Add a volume mounted at `/data` for SQLite persistence
+3. Set `DATABASE_URL=sqlite:///data/fila.db?mode=rwc` and the other env vars
+4. Set the webhook URL to `https://your-app.up.railway.app/webhooks/github`
 
 ## Architecture
 
 Fila is a single Rust binary built with [Rapina](https://github.com/rapina-rs/rapina).
 
-- **Web server** — receives GitHub webhooks, serves the dashboard
-- **Merge queue runner** — background task that processes the queue
-- **SQLite** — stores queue state, batch history, and merge events
-- **GitHub API** — creates merge commits, polls CI, fast-forwards main
+```
+┌─────────────────────────────────────────────────┐
+│                    Fila                         │
+│                                                 │
+│  ┌──────────┐  ┌──────────────┐  ┌───────────┐ │
+│  │ Webhooks │  │ Merge Queue  │  │ Dashboard │ │
+│  │ (GitHub) │  │   Runner     │  │  (HTML)   │ │
+│  └────┬─────┘  └──────┬───────┘  └───────────┘ │
+│       │               │                        │
+│       └───────┬───────┘                        │
+│               ▼                                │
+│         ┌──────────┐      ┌──────────────┐     │
+│         │  SQLite  │      │  GitHub API  │     │
+│         └──────────┘      └──────────────┘     │
+└─────────────────────────────────────────────────┘
+```
 
 The default batch strategy merges all queued PRs together and runs CI once, saving build time and deploy costs. For teams that need strict isolation, the sequential strategy processes one PR at a time.
 
