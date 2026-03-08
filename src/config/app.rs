@@ -22,6 +22,10 @@ pub struct AppConfig {
     #[env = "GITHUB_WEBHOOK_SECRET"]
     pub github_webhook_secret: String,
 
+    #[env = "MERGE_STRATEGY"]
+    #[default = "batch"]
+    pub merge_strategy: String,
+
     #[env = "BATCH_SIZE"]
     #[default = "5"]
     pub batch_size: usize,

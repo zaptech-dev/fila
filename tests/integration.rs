@@ -23,6 +23,7 @@ async fn build_test_app(db_path: &str) -> TestClient {
         github_app_id: "test-app-id".to_string(),
         github_private_key: "test-private-key".to_string(),
         github_webhook_secret: "test-secret".to_string(),
+        merge_strategy: "batch".to_string(),
         batch_size: 5,
         batch_interval_secs: 300,
         ci_timeout_secs: 1800,

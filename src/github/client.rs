@@ -444,6 +444,37 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Close a pull request.
+    pub async fn close_pr(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i32,
+    ) -> Result<(), GitHubClientError> {
+        let body = serde_json::json!({ "state": "closed" });
+
+        let resp = self
+            .client
+            .patch(format!("{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}"))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GitHubClientError::Api(format!(
+                "Close PR failed: {status} {text}"
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Check if all check runs for a commit have passed.
     pub async fn all_checks_passed(
         &self,
