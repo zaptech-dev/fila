@@ -31,6 +31,12 @@ pub fn spawn(
             "Merge queue runner started"
         );
 
+        match service::recover_orphaned(&db).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(count = n, "Recovered orphaned PRs back to queued"),
+            Err(e) => tracing::error!(error = %e, "Failed to recover orphaned PRs"),
+        }
+
         loop {
             ticker.tick().await;
 
