@@ -12,6 +12,7 @@ schema! {
         status: String,
         priority: i32,
         installation_id: i64,
+        approved_by: Option<String>,
         queued_at: Option<DateTime>,
         merged_at: Option<DateTime>,
     }
