@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod entity;
 pub mod errors;
 pub mod github;
+mod health;
 mod merge_events;
 mod pull_requests;
 pub mod queue;
