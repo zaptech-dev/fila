@@ -206,7 +206,11 @@ async fn run_once(
         .await
         .map_err(|e| BatchRunError::Service(e.to_string()))?;
 
-    tracing::info!(batch_id = batch.id, status = final_status, "Batch completed");
+    tracing::info!(
+        batch_id = batch.id,
+        status = final_status,
+        "Batch completed"
+    );
 
     Ok(())
 }

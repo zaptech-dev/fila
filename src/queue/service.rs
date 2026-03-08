@@ -4,10 +4,12 @@ use rapina::sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
 };
 
-use crate::entity::pull_request::{ActiveModel as PrActiveModel, Column as PrColumn, Model as PrModel};
+use crate::entity::PullRequest;
 use crate::entity::batch::{ActiveModel as BatchActiveModel, Model as BatchModel};
 use crate::entity::merge_event::ActiveModel as EventActiveModel;
-use crate::entity::PullRequest;
+use crate::entity::pull_request::{
+    ActiveModel as PrActiveModel, Column as PrColumn, Model as PrModel,
+};
 use crate::github::types::GhPullRequest;
 
 /// Find a PR currently in the queue.
