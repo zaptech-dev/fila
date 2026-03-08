@@ -45,4 +45,8 @@ pub struct AppConfig {
     #[env = "DASHBOARD_URL"]
     #[default = ""]
     pub dashboard_url: String,
+
+    #[env = "BASE_BRANCH"]
+    #[default = "main"]
+    pub base_branch: String,
 }
