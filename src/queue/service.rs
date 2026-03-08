@@ -118,6 +118,30 @@ pub async fn get_queue(db: &Db) -> std::result::Result<Vec<PrModel>, Error> {
         .map_err(|e| DbError(e).into_api_error())
 }
 
+/// Get the next PR to process: highest priority, then oldest queued.
+pub async fn get_next_queued(db: &Db) -> std::result::Result<Option<PrModel>, Error> {
+    use rapina::sea_orm::QuerySelect;
+    PullRequest::find()
+        .filter(PrColumn::Status.eq("queued"))
+        .order_by_desc(PrColumn::Priority)
+        .order_by_asc(PrColumn::QueuedAt)
+        .limit(1)
+        .one(db.conn())
+        .await
+        .map_err(|e| DbError(e).into_api_error())
+}
+
+/// Mark a PR as currently being tested.
+pub async fn mark_testing(db: &Db, pr: &PrModel) -> std::result::Result<(), Error> {
+    let mut active = pr.clone().into_active_model();
+    active.status = Set("testing".to_string());
+    active
+        .update(db.conn())
+        .await
+        .map_err(|e| DbError(e).into_api_error())?;
+    Ok(())
+}
+
 /// Take up to `size` queued PRs and group them into a new batch.
 /// Returns None if the queue is empty.
 pub async fn create_batch(

@@ -27,6 +27,14 @@ pub struct AppConfig {
     pub batch_size: usize,
 
     #[env = "BATCH_INTERVAL_SECS"]
-    #[default = 300]
+    #[default = 10]
     pub batch_interval_secs: usize,
+
+    #[env = "CI_TIMEOUT_SECS"]
+    #[default = "1800"]
+    pub ci_timeout_secs: u32,
+
+    #[env = "POLL_INTERVAL_SECS"]
+    #[default = "15"]
+    pub poll_interval_secs: u32,
 }
