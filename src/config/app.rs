@@ -41,4 +41,8 @@ pub struct AppConfig {
     #[env = "POLL_INTERVAL_SECS"]
     #[default = "15"]
     pub poll_interval_secs: u32,
+
+    #[env = "DASHBOARD_URL"]
+    #[default = ""]
+    pub dashboard_url: String,
 }

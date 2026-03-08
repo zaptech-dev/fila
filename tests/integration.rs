@@ -28,6 +28,7 @@ async fn build_test_app(db_path: &str) -> TestClient {
         batch_interval_secs: 300,
         ci_timeout_secs: 1800,
         poll_interval_secs: 15,
+        dashboard_url: "".to_string(),
     };
 
     let app = fila::build_app(config, false).await;
