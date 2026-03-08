@@ -151,7 +151,15 @@ async fn handle_comment_event(
             .await
             .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
 
-        service::enqueue(db, &repo.owner.login, &repo.name, &pr, installation_id).await?;
+        service::enqueue(
+            db,
+            &repo.owner.login,
+            &repo.name,
+            &pr,
+            installation_id,
+            &comment.user.login,
+        )
+        .await?;
         tracing::info!(
             pr = issue.number,
             user = comment.user.login,
@@ -248,7 +256,15 @@ async fn handle_review_event(
             .await
             .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
 
-        service::enqueue(db, &repo.owner.login, &repo.name, &gh_pr, installation_id).await?;
+        service::enqueue(
+            db,
+            &repo.owner.login,
+            &repo.name,
+            &gh_pr,
+            installation_id,
+            &review.user.login,
+        )
+        .await?;
         tracing::info!(
             pr = pr.number,
             user = review.user.login,
