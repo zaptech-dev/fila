@@ -146,7 +146,10 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
                     if let Some(pr) = pr_map.get(&event.pull_request_id) {
                         format!(
                             "<a href=\"https://github.com/{}/{}/commit/{}\" target=\"_blank\">{}</a>",
-                            pr.repo_owner, pr.repo_name, sha, &sha[..7]
+                            pr.repo_owner,
+                            pr.repo_name,
+                            sha,
+                            &sha[..7]
                         )
                     } else {
                         sha[..7].to_string()
