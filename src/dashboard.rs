@@ -6,6 +6,7 @@ use rapina::http::header::CONTENT_TYPE;
 use rapina::prelude::*;
 use rapina::response::BoxBody;
 use rapina::sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use std::collections::HashMap;
 
 use crate::entity::batch::Column as BatchColumn;
 use crate::entity::merge_event::Column as EventColumn;
@@ -114,21 +115,53 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
     }
     html.push_str("</div>");
 
-    // Recent Activity section
+    // Recent Activity section — look up PR info for links
     html.push_str("<div id=\"section-events\"><h2>Recent Activity</h2>");
     if events.is_empty() {
         html.push_str("<p class=\"empty\">No events yet.</p>");
     } else {
+        let pr_ids: Vec<i32> = events.iter().map(|e| e.pull_request_id).collect();
+        let prs = PullRequest::find()
+            .filter(PrColumn::Id.is_in(pr_ids))
+            .all(db.conn())
+            .await
+            .map_err(DbError)?;
+        let pr_map: HashMap<i32, _> = prs.into_iter().map(|p| (p.id, p)).collect();
+
         html.push_str(
-            "<table><thead><tr><th>Event</th><th>PR ID</th><th>Batch ID</th><th>Details</th></tr></thead><tbody>",
+            "<table><thead><tr><th>Event</th><th>PR</th><th>Details</th></tr></thead><tbody>",
         );
         for event in &events {
+            let pr_cell = if let Some(pr) = pr_map.get(&event.pull_request_id) {
+                format!(
+                    "<a href=\"https://github.com/{}/{}/pull/{}\" target=\"_blank\">#{}</a>",
+                    pr.repo_owner, pr.repo_name, pr.pr_number, pr.pr_number
+                )
+            } else {
+                format!("#{}", event.pull_request_id)
+            };
+
+            let details = match event.details.as_deref() {
+                Some(sha) if sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()) => {
+                    if let Some(pr) = pr_map.get(&event.pull_request_id) {
+                        format!(
+                            "<a href=\"https://github.com/{}/{}/commit/{}\" target=\"_blank\">{}</a>",
+                            pr.repo_owner,
+                            pr.repo_name,
+                            sha,
+                            &sha[..7]
+                        )
+                    } else {
+                        sha[..7].to_string()
+                    }
+                }
+                Some(d) => d.to_string(),
+                None => "\u{2014}".to_string(),
+            };
+
             html.push_str(&format!(
-                "<tr><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td class=\"mono\">{}</td><td>{}</td></tr>",
-                event.event_type,
-                event.pull_request_id,
-                event.batch_id,
-                event.details.as_deref().unwrap_or("\u{2014}"),
+                "<tr><td><span class=\"status status-{}\">{}</span></td><td class=\"mono\">{}</td><td class=\"mono\">{}</td></tr>",
+                event.event_type, event.event_type, pr_cell, details,
             ));
         }
         html.push_str("</tbody></table>");
@@ -194,6 +227,9 @@ tr:hover td { background: #fafafa; }
 .status-pending { background: #e0e7ff; color: #3730a3; }
 .status-testing { background: #fef3c7; color: #92400e; }
 .status-done { background: #d1fae5; color: #065f46; }
+.status-merge_created { background: #e0e7ff; color: #3730a3; }
+.status-ci_passed { background: #d1fae5; color: #065f46; }
+.status-ci_failed { background: #fee2e2; color: #991b1b; }
 a { color: #1e40af; text-decoration: none; }
 a:hover { text-decoration: underline; }
 .empty { color: #999; font-style: italic; padding: 1rem 0; }
