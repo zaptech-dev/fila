@@ -157,6 +157,15 @@ async fn handle_comment_event(
             user = comment.user.login,
             "PR added to merge queue via comment"
         );
+
+        let short_sha = &pr.head.sha[..7.min(pr.head.sha.len())];
+        let reply = format!(
+            "Commit {} has been added to the merge queue by @{}.",
+            short_sha, comment.user.login,
+        );
+        let _ = github
+            .create_issue_comment(&token, &repo.owner.login, &repo.name, issue.number, &reply)
+            .await;
     } else if body == "@fila cancel" {
         service::dequeue(db, &repo.owner.login, &repo.name, issue.number).await?;
         tracing::info!(
@@ -164,6 +173,22 @@ async fn handle_comment_event(
             user = comment.user.login,
             "PR removed from merge queue via comment"
         );
+
+        if let Ok(token) = github.get_installation_token(installation_id).await {
+            let reply = format!(
+                "PR #{} has been removed from the merge queue by @{}.",
+                issue.number, comment.user.login,
+            );
+            let _ = github
+                .create_issue_comment(
+                    &token,
+                    &repo.owner.login,
+                    &repo.name,
+                    issue.number,
+                    &reply,
+                )
+                .await;
+        }
     } else if body == "@fila status" {
         let token = github
             .get_installation_token(installation_id)
