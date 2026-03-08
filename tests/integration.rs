@@ -35,6 +35,7 @@ async fn build_test_app(db_path: &str) -> TestClient {
         ci_timeout_secs: 1800,
         poll_interval_secs: 15,
         dashboard_url: "".to_string(),
+        base_branch: "main".to_string(),
     };
 
     let github = Arc::new(GitHubClient::new(

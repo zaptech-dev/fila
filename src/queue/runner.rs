@@ -96,7 +96,8 @@ async fn run_batch(
     };
 
     // Step 1: Get main HEAD
-    let main_sha = match github.get_ref(&token, &owner, &repo, "heads/main").await {
+    let base_ref = format!("heads/{}", config.base_branch);
+    let main_sha = match github.get_ref(&token, &owner, &repo, &base_ref).await {
         Ok(sha) => sha,
         Err(e) => {
             for pr in &batch_prs {
@@ -105,7 +106,7 @@ async fn run_batch(
                     github,
                     &token,
                     pr,
-                    &format!("Failed to get main HEAD: {e}"),
+                    &format!("Failed to get {} HEAD: {e}", config.base_branch),
                 )
                 .await;
             }
@@ -113,7 +114,7 @@ async fn run_batch(
         }
     };
 
-    // Step 2: Reset fila/merge to main HEAD
+    // Step 2: Reset fila/merge to base branch HEAD
     let merge_ref = format!("heads/{MERGE_BRANCH}");
     if let Err(e) = github
         .ensure_ref(&token, &owner, &repo, &merge_ref, &main_sha)
@@ -162,13 +163,16 @@ async fn run_batch(
                 merged_prs.push(pr);
             }
             Ok(MergeResult::AlreadyMerged) => {
-                tracing::info!(pr = pr.pr_number, "PR already merged into main");
+                tracing::info!(pr = pr.pr_number, "PR already merged");
                 service::mark_merged(db, pr).await.ok();
                 comment(
                     github,
                     &token,
                     pr,
-                    &format!("#{} is already merged into main.", pr.pr_number),
+                    &format!(
+                        "#{} is already merged into {}.",
+                        pr.pr_number, config.base_branch
+                    ),
                 )
                 .await;
                 close_pr(github, &token, pr).await;
@@ -256,16 +260,17 @@ async fn run_batch(
         }
     }
 
-    // Step 5: Fast-forward main to the final merge commit
+    // Step 5: Fast-forward base branch to the final merge commit
     match github
-        .update_ref(&token, &owner, &repo, "heads/main", &final_sha, false)
+        .update_ref(&token, &owner, &repo, &base_ref, &final_sha, false)
         .await
     {
         Ok(()) => {
             tracing::info!(
                 prs = ?pr_numbers,
                 sha = final_sha,
-                "Main fast-forwarded, batch merged"
+                branch = config.base_branch,
+                "Base branch fast-forwarded, batch merged"
             );
             for pr in &merged_prs {
                 service::mark_merged(db, pr)
@@ -278,7 +283,12 @@ async fn run_batch(
                     github,
                     &token,
                     pr,
-                    &format!("#{} merged into main ({})", pr.pr_number, &final_sha[..8]),
+                    &format!(
+                        "#{} merged into {} ({})",
+                        pr.pr_number,
+                        config.base_branch,
+                        &final_sha[..8]
+                    ),
                 )
                 .await;
                 close_pr(github, &token, pr).await;
@@ -297,7 +307,10 @@ async fn run_batch(
                     pr.id,
                     0,
                     "requeued",
-                    Some("Main was updated during CI, retrying"),
+                    Some(&format!(
+                        "{} was updated during CI, retrying",
+                        config.base_branch
+                    )),
                 )
                 .await
                 .ok();
@@ -305,7 +318,7 @@ async fn run_batch(
                     github,
                     &token,
                     pr,
-                    "Main was updated while CI was running. Re-queued — will retry automatically.",
+                    &format!("{} was updated while CI was running. Re-queued — will retry automatically.", config.base_branch),
                 )
                 .await;
             }
@@ -350,8 +363,9 @@ async fn run_sequential(
         }
     };
 
+    let base_ref = format!("heads/{}", config.base_branch);
     let main_sha = match github
-        .get_ref(&token, &pr.repo_owner, &pr.repo_name, "heads/main")
+        .get_ref(&token, &pr.repo_owner, &pr.repo_name, &base_ref)
         .await
     {
         Ok(sha) => sha,
@@ -361,7 +375,7 @@ async fn run_sequential(
                 github,
                 &token,
                 &pr,
-                &format!("Failed to get main HEAD: {e}"),
+                &format!("Failed to get {} HEAD: {e}", config.base_branch),
             )
             .await;
             return Ok(());
@@ -403,7 +417,7 @@ async fn run_sequential(
             sha
         }
         Ok(MergeResult::AlreadyMerged) => {
-            tracing::info!(pr = pr.pr_number, "PR already merged into main");
+            tracing::info!(pr = pr.pr_number, "PR already merged");
             service::mark_merged(db, &pr)
                 .await
                 .map_err(|e| RunError(e.to_string()))?;
@@ -411,7 +425,10 @@ async fn run_sequential(
                 github,
                 &token,
                 &pr,
-                &format!("#{} is already merged into main.", pr.pr_number),
+                &format!(
+                    "#{} is already merged into {}.",
+                    pr.pr_number, config.base_branch
+                ),
             )
             .await;
             close_pr(github, &token, &pr).await;
@@ -424,8 +441,8 @@ async fn run_sequential(
                 &token,
                 &pr,
                 &format!(
-                    "Merge conflict: #{} cannot be cleanly merged into main. Rebase and `@fila ship` again.",
-                    pr.pr_number
+                    "Merge conflict: #{} cannot be cleanly merged into {}. Rebase and `@fila ship` again.",
+                    pr.pr_number, config.base_branch
                 ),
             )
             .await;
@@ -500,7 +517,7 @@ async fn run_sequential(
             &token,
             &pr.repo_owner,
             &pr.repo_name,
-            "heads/main",
+            &base_ref,
             &merge_sha,
             false,
         )
@@ -510,7 +527,8 @@ async fn run_sequential(
             tracing::info!(
                 pr = pr.pr_number,
                 sha = merge_sha,
-                "Main fast-forwarded, PR merged"
+                branch = config.base_branch,
+                "Base branch fast-forwarded, PR merged"
             );
             service::mark_merged(db, &pr)
                 .await
@@ -522,7 +540,12 @@ async fn run_sequential(
                 github,
                 &token,
                 &pr,
-                &format!("#{} merged into main ({})", pr.pr_number, &merge_sha[..8]),
+                &format!(
+                    "#{} merged into {} ({})",
+                    pr.pr_number,
+                    config.base_branch,
+                    &merge_sha[..8]
+                ),
             )
             .await;
             close_pr(github, &token, &pr).await;
@@ -539,7 +562,10 @@ async fn run_sequential(
                 pr.id,
                 0,
                 "requeued",
-                Some("Main was updated during CI, retrying"),
+                Some(&format!(
+                    "{} was updated during CI, retrying",
+                    config.base_branch
+                )),
             )
             .await
             .ok();
@@ -547,7 +573,10 @@ async fn run_sequential(
                 github,
                 &token,
                 &pr,
-                "Main was updated while CI was running. Re-queued — will retry automatically.",
+                &format!(
+                    "{} was updated while CI was running. Re-queued — will retry automatically.",
+                    config.base_branch
+                ),
             )
             .await;
         }
