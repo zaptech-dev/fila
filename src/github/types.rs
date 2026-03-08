@@ -76,6 +76,12 @@ pub struct GhMergeCommit {
     pub sha: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GhAppInfo {
+    pub name: String,
+    pub slug: String,
+}
+
 pub enum MergeResult {
     Created(String),
     AlreadyMerged,
