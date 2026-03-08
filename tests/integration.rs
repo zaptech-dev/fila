@@ -25,6 +25,8 @@ async fn build_test_app(db_path: &str) -> TestClient {
         github_webhook_secret: "test-secret".to_string(),
         batch_size: 5,
         batch_interval_secs: 300,
+        ci_timeout_secs: 1800,
+        poll_interval_secs: 15,
     };
 
     let app = fila::build_app(config, false).await;
