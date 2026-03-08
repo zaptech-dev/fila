@@ -135,6 +135,8 @@ pub struct WebhookRepository {
 pub struct WebhookReview {
     pub state: String,
     pub user: GhUser,
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
