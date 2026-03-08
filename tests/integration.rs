@@ -1,10 +1,12 @@
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rapina::prelude::*;
 use rapina::testing::TestClient;
 
 use fila::config::app::AppConfig;
+use fila::github::client::GitHubClient;
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -31,7 +33,11 @@ async fn build_test_app(db_path: &str) -> TestClient {
         dashboard_url: "".to_string(),
     };
 
-    let app = fila::build_app(config, false).await;
+    let github = Arc::new(GitHubClient::new(
+        config.github_app_id.clone(),
+        config.github_private_key.clone(),
+    ));
+    let app = fila::build_app(config, github, false).await;
     TestClient::new(app).await
 }
 

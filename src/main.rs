@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use fila::batch;
 use fila::config::app::AppConfig;
 use fila::github::client::GitHubClient;
+use fila::queue;
 use rapina::database::DatabaseConfig;
 
 #[tokio::main]
@@ -25,7 +25,10 @@ async fn main() -> std::io::Result<()> {
     ));
 
     // Spawn the batch runner before starting the server
-    batch::runner::spawn(runner_db, github, config.clone());
+    queue::runner::spawn(runner_db, github.clone(), config.clone());
 
-    fila::build_app(config, true).await.listen(&addr).await
+    fila::build_app(config, github, true)
+        .await
+        .listen(&addr)
+        .await
 }

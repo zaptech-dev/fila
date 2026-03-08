@@ -59,8 +59,8 @@ impl From<DbError> for WebhookError {
 pub async fn handle_webhook(
     headers: Headers,
     body: Json<serde_json::Value>,
-    _config: State<AppConfig>,
-    _github: State<Arc<GitHubClient>>,
+    config: State<AppConfig>,
+    github: State<Arc<GitHubClient>>,
     db: Db,
 ) -> Result<Json<WebhookResponse>> {
     let event = headers
@@ -75,8 +75,8 @@ pub async fn handle_webhook(
 
     match event {
         "pull_request" => handle_pr_event(&payload, &db).await?,
-        "pull_request_review" => handle_review_event(&payload, &db, &_github, &_config).await?,
-        "issue_comment" => handle_comment_event(&payload, &db, &_github, &_config).await?,
+        "pull_request_review" => handle_review_event(&payload, &db, &github, &config).await?,
+        "issue_comment" => handle_comment_event(&payload, &db, &github, &config).await?,
         "check_suite" => handle_check_suite_event(&payload).await?,
         _ => {
             tracing::debug!(event = event, "Ignoring unhandled event type");
