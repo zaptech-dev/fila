@@ -1,25 +1,25 @@
 use rapina::database::DbError;
 use rapina::prelude::*;
 
-pub enum PullRequestError {
-    DbError(DbError),
+pub enum CrudError {
+    Db(DbError),
 }
 
-impl IntoApiError for PullRequestError {
+impl IntoApiError for CrudError {
     fn into_api_error(self) -> Error {
         match self {
-            PullRequestError::DbError(e) => e.into_api_error(),
+            CrudError::Db(e) => e.into_api_error(),
         }
     }
 }
 
-impl DocumentedError for PullRequestError {
+impl DocumentedError for CrudError {
     fn error_variants() -> Vec<ErrorVariant> {
         vec![
             ErrorVariant {
                 status: 404,
                 code: "NOT_FOUND",
-                description: "PullRequest not found",
+                description: "Resource not found",
             },
             ErrorVariant {
                 status: 500,
@@ -30,8 +30,8 @@ impl DocumentedError for PullRequestError {
     }
 }
 
-impl From<DbError> for PullRequestError {
+impl From<DbError> for CrudError {
     fn from(e: DbError) -> Self {
-        PullRequestError::DbError(e)
+        CrudError::Db(e)
     }
 }

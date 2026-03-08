@@ -644,7 +644,7 @@ async fn fail_pr_with_comment(
 async fn requeue_pr(db: &Db, pr: &PrModel) {
     use rapina::sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
     let mut active = pr.clone().into_active_model();
-    active.status = Set("queued".to_string());
+    active.status = Set(crate::types::PrStatus::Queued.to_string());
     active.update(db.conn()).await.ok();
 }
 

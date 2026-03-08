@@ -4,18 +4,17 @@ use rapina::sea_orm::EntityTrait;
 
 use crate::entity::PullRequest;
 use crate::entity::pull_request::Model;
-
-use super::error::PullRequestError;
+use crate::errors::CrudError;
 
 #[get("/pull_requests")]
-#[errors(PullRequestError)]
+#[errors(CrudError)]
 pub async fn list_pull_requests(db: Db) -> Result<Json<Vec<Model>>> {
     let items = PullRequest::find().all(db.conn()).await.map_err(DbError)?;
     Ok(Json(items))
 }
 
 #[get("/pull_requests/:id")]
-#[errors(PullRequestError)]
+#[errors(CrudError)]
 pub async fn get_pull_request(db: Db, id: Path<i32>) -> Result<Json<Model>> {
     let id = id.into_inner();
     let item = PullRequest::find_by_id(id)

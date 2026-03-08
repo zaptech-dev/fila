@@ -4,18 +4,17 @@ use rapina::sea_orm::EntityTrait;
 
 use crate::entity::MergeEvent;
 use crate::entity::merge_event::Model;
-
-use super::error::MergeEventError;
+use crate::errors::CrudError;
 
 #[get("/merge_events")]
-#[errors(MergeEventError)]
+#[errors(CrudError)]
 pub async fn list_merge_events(db: Db) -> Result<Json<Vec<Model>>> {
     let items = MergeEvent::find().all(db.conn()).await.map_err(DbError)?;
     Ok(Json(items))
 }
 
 #[get("/merge_events/:id")]
-#[errors(MergeEventError)]
+#[errors(CrudError)]
 pub async fn get_merge_event(db: Db, id: Path<i32>) -> Result<Json<Model>> {
     let id = id.into_inner();
     let item = MergeEvent::find_by_id(id)
