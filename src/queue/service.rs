@@ -33,6 +33,7 @@ pub async fn enqueue(
     owner: &str,
     repo: &str,
     pr: &GhPullRequest,
+    installation_id: i64,
 ) -> std::result::Result<(), Error> {
     if find_queued_pr(db, owner, repo, pr.number).await?.is_some() {
         return Ok(());
@@ -47,6 +48,7 @@ pub async fn enqueue(
         head_sha: Set(pr.head.sha.clone()),
         status: Set("queued".to_string()),
         priority: Set(0),
+        installation_id: Set(installation_id),
         queued_at: Set(Some(chrono::Utc::now())),
         merged_at: Set(None),
         ..Default::default()
