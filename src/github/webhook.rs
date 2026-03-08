@@ -8,6 +8,7 @@ use crate::config::app::AppConfig;
 use crate::queue::service;
 
 use super::client::GitHubClient;
+use super::signature::SignedBody;
 use super::types::WebhookPayload;
 
 #[derive(Serialize, JsonSchema)]
@@ -52,13 +53,12 @@ impl From<DbError> for WebhookError {
     }
 }
 
-// TODO: Add HMAC-SHA256 signature verification when Rapina gets a raw body extractor.
 #[public]
 #[post("/webhooks/github")]
 #[errors(WebhookError)]
 pub async fn handle_webhook(
     headers: Headers,
-    body: Json<serde_json::Value>,
+    body: SignedBody<WebhookPayload>,
     config: State<AppConfig>,
     github: State<Arc<GitHubClient>>,
     db: Db,
@@ -68,8 +68,7 @@ pub async fn handle_webhook(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown");
 
-    let payload: WebhookPayload = serde_json::from_value(body.into_inner())
-        .map_err(|e| WebhookError::InvalidPayload(e.to_string()))?;
+    let payload = body.into_inner();
 
     tracing::info!(event = event, action = payload.action, "Webhook received");
 
