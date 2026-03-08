@@ -75,8 +75,8 @@ pub async fn handle_webhook(
 
     match event {
         "pull_request" => handle_pr_event(&payload, &db).await?,
-        "pull_request_review" => handle_review_event(&payload, &db).await?,
-        "issue_comment" => handle_comment_event(&payload, &db, &_github).await?,
+        "pull_request_review" => handle_review_event(&payload, &db, &_github, &_config).await?,
+        "issue_comment" => handle_comment_event(&payload, &db, &_github, &_config).await?,
         "check_suite" => handle_check_suite_event(&payload).await?,
         _ => {
             tracing::debug!(event = event, "Ignoring unhandled event type");
@@ -115,6 +115,7 @@ async fn handle_comment_event(
     payload: &WebhookPayload,
     db: &Db,
     github: &Arc<GitHubClient>,
+    config: &AppConfig,
 ) -> std::result::Result<(), Error> {
     if payload.action != "created" {
         return Ok(());
@@ -159,10 +160,7 @@ async fn handle_comment_event(
         );
 
         let short_sha = &pr.head.sha[..7.min(pr.head.sha.len())];
-        let reply = format!(
-            "Commit {} has been added to the merge queue by @{}.",
-            short_sha, comment.user.login,
-        );
+        let reply = queue_confirmation(short_sha, &comment.user.login, &config.dashboard_url);
         let _ = github
             .create_issue_comment(&token, &repo.owner.login, &repo.name, issue.number, &reply)
             .await;
@@ -215,19 +213,54 @@ async fn handle_comment_event(
     Ok(())
 }
 
-async fn handle_review_event(payload: &WebhookPayload, _db: &Db) -> std::result::Result<(), Error> {
+async fn handle_review_event(
+    payload: &WebhookPayload,
+    db: &Db,
+    github: &Arc<GitHubClient>,
+    config: &AppConfig,
+) -> std::result::Result<(), Error> {
     let review = payload
         .review
         .as_ref()
         .ok_or_else(|| WebhookError::InvalidPayload("Missing review".into()).into_api_error())?;
+    let pr = payload.pull_request.as_ref().ok_or_else(|| {
+        WebhookError::InvalidPayload("Missing pull_request".into()).into_api_error()
+    })?;
+    let repo = payload.repository.as_ref().ok_or_else(|| {
+        WebhookError::InvalidPayload("Missing repository".into()).into_api_error()
+    })?;
 
     if review.state == "approved" {
-        let pr = payload.pull_request.as_ref();
+        tracing::info!(pr = pr.number, reviewer = review.user.login, "PR approved");
+    }
+
+    // Check if the review body contains a fila command
+    let body = review.body.as_deref().unwrap_or("").trim().to_lowercase();
+    let installation_id = payload.installation.as_ref().map(|i| i.id).unwrap_or(0);
+
+    if body == "@fila ship" || body.contains("@fila ship") {
+        let token = github
+            .get_installation_token(installation_id)
+            .await
+            .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
+
+        let gh_pr = github
+            .get_pr(&token, &repo.owner.login, &repo.name, pr.number)
+            .await
+            .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
+
+        service::enqueue(db, &repo.owner.login, &repo.name, &gh_pr, installation_id).await?;
         tracing::info!(
-            pr = pr.map(|p| p.number),
-            reviewer = review.user.login,
-            "PR approved"
+            pr = pr.number,
+            user = review.user.login,
+            "PR added to merge queue via review"
         );
+
+        let short_sha = &gh_pr.head.sha[..7.min(gh_pr.head.sha.len())];
+        let reply = queue_confirmation(short_sha, &review.user.login, &config.dashboard_url);
+        let _ = github
+            .create_issue_comment(&token, &repo.owner.login, &repo.name, pr.number, &reply)
+            .await;
     }
 
     Ok(())
@@ -250,4 +283,15 @@ async fn handle_check_suite_event(payload: &WebhookPayload) -> std::result::Resu
     );
 
     Ok(())
+}
+
+fn queue_confirmation(short_sha: &str, user: &str, dashboard_url: &str) -> String {
+    let mut msg = format!(
+        "Commit {} has been added to the merge queue by @{}.",
+        short_sha, user,
+    );
+    if !dashboard_url.is_empty() {
+        msg.push_str(&format!("\n\n[View queue]({})", dashboard_url));
+    }
+    msg
 }
