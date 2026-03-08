@@ -96,12 +96,17 @@ async fn handle_pr_event(payload: &WebhookPayload, db: &Db) -> std::result::Resu
         .repository
         .as_ref()
         .ok_or_else(|| WebhookError::InvalidPayload("Missing repository".into()).into_api_error())?;
+    let installation_id = payload
+        .installation
+        .as_ref()
+        .map(|i| i.id)
+        .unwrap_or(0);
 
     match payload.action.as_str() {
         "labeled" => {
             let label = payload.label.as_ref().map(|l| l.name.as_str());
             if label == Some("merge") {
-                service::enqueue(db, &repo.owner.login, &repo.name, pr).await?;
+                service::enqueue(db, &repo.owner.login, &repo.name, pr, installation_id).await?;
                 tracing::info!(pr = pr.number, "PR added to merge queue");
             }
         }
@@ -146,10 +151,16 @@ async fn handle_review_event(payload: &WebhookPayload, db: &Db) -> std::result::
         .as_ref()
         .ok_or_else(|| WebhookError::InvalidPayload("Missing repository".into()).into_api_error())?;
 
+    let installation_id = payload
+        .installation
+        .as_ref()
+        .map(|i| i.id)
+        .unwrap_or(0);
+
     let existing = service::find_queued_pr(db, &repo.owner.login, &repo.name, pr.number).await?;
     if existing.is_none() {
         if pr.labels.iter().any(|l| l.name == "merge") {
-            service::enqueue(db, &repo.owner.login, &repo.name, pr).await?;
+            service::enqueue(db, &repo.owner.login, &repo.name, pr, installation_id).await?;
             tracing::info!(pr = pr.number, "PR auto-enqueued after approval");
         }
     }

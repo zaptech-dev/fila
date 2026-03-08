@@ -69,7 +69,7 @@ async fn run_once(
         // Get an installation token. We need the installation_id from the webhook,
         // but for now we'll get a fresh PR from the API to confirm state.
         // TODO: store installation_id in the PR record from the webhook payload
-        let token = match github.get_installation_token(config.github_app_id.parse().unwrap_or(0)).await {
+        let token = match github.get_installation_token(pr.installation_id).await {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to get installation token");
@@ -140,7 +140,7 @@ async fn run_once(
             continue;
         }
 
-        let token = match github.get_installation_token(config.github_app_id.parse().unwrap_or(0)).await {
+        let token = match github.get_installation_token(pr.installation_id).await {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(pr = pr.pr_number, error = %e, "Token refresh failed during merge");
