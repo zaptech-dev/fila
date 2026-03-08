@@ -6,6 +6,7 @@ use rapina::prelude::*;
 use rapina::sea_orm::DatabaseConnection;
 
 use crate::config::app::AppConfig;
+use crate::entity::pull_request::Model as PrModel;
 use crate::github::client::GitHubClient;
 use crate::github::types::MergeResult;
 use crate::queue::service;
@@ -13,8 +14,6 @@ use crate::queue::service;
 const MERGE_BRANCH: &str = "fila/merge";
 
 /// Spawn the merge queue runner as a background task.
-/// Processes one PR at a time using the bors-style flow:
-/// reset fila/merge to main, merge PR, wait for CI, fast-forward main.
 pub fn spawn(
     conn: DatabaseConnection,
     github: Arc<GitHubClient>,
@@ -28,21 +27,290 @@ pub fn spawn(
         tracing::info!(
             interval_secs = config.batch_interval_secs,
             ci_timeout_secs = config.ci_timeout_secs,
+            strategy = config.merge_strategy,
             "Merge queue runner started"
         );
 
         loop {
             ticker.tick().await;
 
-            if let Err(e) = run_once(&db, &github, &config).await {
+            let result = match config.merge_strategy.as_str() {
+                "sequential" => run_sequential(&db, &github, &config).await,
+                _ => run_batch(&db, &github, &config).await,
+            };
+
+            if let Err(e) = result {
                 tracing::error!(error = %e, "Merge queue run failed");
             }
         }
     })
 }
 
-/// Execute a single merge cycle: pick next PR, test it, merge it.
-async fn run_once(
+/// Batch strategy: merge all queued PRs into fila/merge, run CI once, fast-forward once.
+async fn run_batch(
+    db: &Db,
+    github: &GitHubClient,
+    config: &AppConfig,
+) -> std::result::Result<(), RunError> {
+    let prs = service::get_queue(db)
+        .await
+        .map_err(|e| RunError(e.to_string()))?;
+
+    if prs.is_empty() {
+        return Ok(());
+    }
+
+    // Group by repo — process one repo per cycle
+    let owner = prs[0].repo_owner.clone();
+    let repo = prs[0].repo_name.clone();
+    let installation_id = prs[0].installation_id;
+
+    let batch_prs: Vec<PrModel> = prs
+        .into_iter()
+        .filter(|p| p.repo_owner == owner && p.repo_name == repo)
+        .take(config.batch_size)
+        .collect();
+
+    tracing::info!(
+        count = batch_prs.len(),
+        repo = format!("{owner}/{repo}"),
+        "Processing batch"
+    );
+
+    let token = match github.get_installation_token(installation_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            for pr in &batch_prs {
+                service::mark_failed(db, pr, &format!("Auth failed: {e}"))
+                    .await
+                    .ok();
+            }
+            return Err(RunError(e.to_string()));
+        }
+    };
+
+    // Step 1: Get main HEAD
+    let main_sha = match github.get_ref(&token, &owner, &repo, "heads/main").await {
+        Ok(sha) => sha,
+        Err(e) => {
+            for pr in &batch_prs {
+                fail_pr_with_comment(
+                    db,
+                    github,
+                    &token,
+                    pr,
+                    &format!("Failed to get main HEAD: {e}"),
+                )
+                .await;
+            }
+            return Ok(());
+        }
+    };
+
+    // Step 2: Reset fila/merge to main HEAD
+    let merge_ref = format!("heads/{MERGE_BRANCH}");
+    if let Err(e) = github
+        .ensure_ref(&token, &owner, &repo, &merge_ref, &main_sha)
+        .await
+    {
+        for pr in &batch_prs {
+            fail_pr_with_comment(
+                db,
+                github,
+                &token,
+                pr,
+                &format!("Failed to reset {MERGE_BRANCH}: {e}"),
+            )
+            .await;
+        }
+        return Ok(());
+    }
+
+    // Step 3: Merge each PR sequentially into fila/merge
+    let mut merged_prs: Vec<&PrModel> = Vec::new();
+    let mut final_sha = main_sha;
+
+    for pr in &batch_prs {
+        service::mark_testing(db, pr)
+            .await
+            .map_err(|e| RunError(e.to_string()))?;
+        service::log_event(db, pr.id, 0, "testing", None).await.ok();
+
+        match github
+            .create_merge(
+                &token,
+                &owner,
+                &repo,
+                MERGE_BRANCH,
+                &pr.head_sha,
+                &format!("Fila: testing #{} — {}", pr.pr_number, pr.title),
+            )
+            .await
+        {
+            Ok(MergeResult::Created(sha)) => {
+                tracing::info!(pr = pr.pr_number, merge_sha = sha, "Merge commit created");
+                service::log_event(db, pr.id, 0, "merge_created", Some(&sha))
+                    .await
+                    .ok();
+                final_sha = sha;
+                merged_prs.push(pr);
+            }
+            Ok(MergeResult::AlreadyMerged) => {
+                tracing::info!(pr = pr.pr_number, "PR already merged into main");
+                service::mark_merged(db, pr).await.ok();
+                comment(
+                    github,
+                    &token,
+                    pr,
+                    &format!("#{} is already merged into main.", pr.pr_number),
+                )
+                .await;
+                close_pr(github, &token, pr).await;
+            }
+            Ok(MergeResult::Conflict) => {
+                fail_pr_with_comment(
+                    db,
+                    github,
+                    &token,
+                    pr,
+                    &format!(
+                        "Merge conflict: #{} cannot be cleanly merged. Rebase and `@fila ship` again.",
+                        pr.pr_number
+                    ),
+                )
+                .await;
+            }
+            Err(e) => {
+                fail_pr_with_comment(
+                    db,
+                    github,
+                    &token,
+                    pr,
+                    &format!("Failed to create merge commit: {e}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    if merged_prs.is_empty() {
+        return Ok(());
+    }
+
+    let pr_numbers: Vec<i32> = merged_prs.iter().map(|p| p.pr_number).collect();
+    tracing::info!(
+        prs = ?pr_numbers,
+        merge_sha = final_sha,
+        "Batch merged, waiting for CI"
+    );
+
+    // Step 4: Wait for CI on the final merge SHA
+    let poll_interval = Duration::from_secs(config.poll_interval_secs as u64);
+    let timeout = Duration::from_secs(config.ci_timeout_secs as u64);
+    let ci_result = poll_checks(
+        github,
+        &token,
+        &owner,
+        &repo,
+        &final_sha,
+        poll_interval,
+        timeout,
+    )
+    .await;
+
+    match ci_result {
+        CiResult::Passed => {
+            tracing::info!(prs = ?pr_numbers, "CI passed on batch merge commit");
+            for pr in &merged_prs {
+                service::log_event(db, pr.id, 0, "ci_passed", Some(&final_sha))
+                    .await
+                    .ok();
+            }
+        }
+        CiResult::Failed(details) => {
+            let msg = format!(
+                "CI failed on batch merge commit `{}`:\n{}",
+                &final_sha[..8],
+                details
+            );
+            for pr in &merged_prs {
+                fail_pr_with_comment(db, github, &token, pr, &msg).await;
+            }
+            return Ok(());
+        }
+        CiResult::Timeout => {
+            let msg = format!(
+                "CI timed out after {} minutes. `@fila ship` to retry.",
+                config.ci_timeout_secs / 60
+            );
+            for pr in &merged_prs {
+                fail_pr_with_comment(db, github, &token, pr, &msg).await;
+            }
+            return Ok(());
+        }
+    }
+
+    // Step 5: Fast-forward main to the final merge commit
+    match github
+        .update_ref(&token, &owner, &repo, "heads/main", &final_sha, false)
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                prs = ?pr_numbers,
+                sha = final_sha,
+                "Main fast-forwarded, batch merged"
+            );
+            for pr in &merged_prs {
+                service::mark_merged(db, pr)
+                    .await
+                    .map_err(|e| RunError(e.to_string()))?;
+                service::log_event(db, pr.id, 0, "merged", Some(&final_sha))
+                    .await
+                    .ok();
+                comment(
+                    github,
+                    &token,
+                    pr,
+                    &format!("#{} merged into main ({})", pr.pr_number, &final_sha[..8]),
+                )
+                .await;
+                close_pr(github, &token, pr).await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                prs = ?pr_numbers,
+                error = %e,
+                "Fast-forward failed, re-queuing batch"
+            );
+            for pr in &merged_prs {
+                requeue_pr(db, pr).await;
+                service::log_event(
+                    db,
+                    pr.id,
+                    0,
+                    "requeued",
+                    Some("Main was updated during CI, retrying"),
+                )
+                .await
+                .ok();
+                comment(
+                    github,
+                    &token,
+                    pr,
+                    "Main was updated while CI was running. Re-queued — will retry automatically.",
+                )
+                .await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Sequential strategy: process one PR at a time (original bors-style).
+async fn run_sequential(
     db: &Db,
     github: &GitHubClient,
     config: &AppConfig,
@@ -76,7 +344,6 @@ async fn run_once(
         }
     };
 
-    // Step 1: Get main HEAD
     let main_sha = match github
         .get_ref(&token, &pr.repo_owner, &pr.repo_name, "heads/main")
         .await
@@ -95,7 +362,6 @@ async fn run_once(
         }
     };
 
-    // Step 2: Reset fila/merge to main HEAD (create if it doesn't exist)
     let merge_ref = format!("heads/{MERGE_BRANCH}");
     if let Err(e) = github
         .ensure_ref(&token, &pr.repo_owner, &pr.repo_name, &merge_ref, &main_sha)
@@ -112,7 +378,6 @@ async fn run_once(
         return Ok(());
     }
 
-    // Step 3: Merge PR branch into fila/merge
     let merge_sha = match github
         .create_merge(
             &token,
@@ -143,6 +408,7 @@ async fn run_once(
                 &format!("#{} is already merged into main.", pr.pr_number),
             )
             .await;
+            close_pr(github, &token, &pr).await;
             return Ok(());
         }
         Ok(MergeResult::Conflict) => {
@@ -172,10 +438,18 @@ async fn run_once(
         }
     };
 
-    // Step 4: Wait for CI on the merge commit
     let poll_interval = Duration::from_secs(config.poll_interval_secs as u64);
     let timeout = Duration::from_secs(config.ci_timeout_secs as u64);
-    let ci_result = poll_checks(github, &token, &pr, &merge_sha, poll_interval, timeout).await;
+    let ci_result = poll_checks(
+        github,
+        &token,
+        &pr.repo_owner,
+        &pr.repo_name,
+        &merge_sha,
+        poll_interval,
+        timeout,
+    )
+    .await;
 
     match ci_result {
         CiResult::Passed => {
@@ -215,7 +489,6 @@ async fn run_once(
         }
     }
 
-    // Step 5: Fast-forward main to the merge commit
     match github
         .update_ref(
             &token,
@@ -246,10 +519,9 @@ async fn run_once(
                 &format!("#{} merged into main ({})", pr.pr_number, &merge_sha[..8]),
             )
             .await;
+            close_pr(github, &token, &pr).await;
         }
         Err(e) => {
-            // Fast-forward failed — someone pushed to main while CI was running.
-            // Re-queue so it gets retried against the new main.
             tracing::warn!(
                 pr = pr.pr_number,
                 error = %e,
@@ -288,7 +560,8 @@ enum CiResult {
 async fn poll_checks(
     github: &GitHubClient,
     token: &str,
-    pr: &crate::entity::pull_request::Model,
+    owner: &str,
+    repo: &str,
     sha: &str,
     interval: Duration,
     timeout: Duration,
@@ -302,10 +575,7 @@ async fn poll_checks(
 
         tokio::time::sleep(interval).await;
 
-        let checks = match github
-            .get_check_runs(token, &pr.repo_owner, &pr.repo_name, sha)
-            .await
-        {
+        let checks = match github.get_check_runs(token, owner, repo, sha).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to fetch check runs, retrying");
@@ -314,7 +584,7 @@ async fn poll_checks(
         };
 
         if checks.check_runs.is_empty() {
-            tracing::debug!(pr = pr.pr_number, "No check runs yet, waiting");
+            tracing::debug!(sha = &sha[..8], "No check runs yet, waiting");
             continue;
         }
 
@@ -327,14 +597,13 @@ async fn poll_checks(
                 .map(|c| c.name.as_str())
                 .collect();
             tracing::debug!(
-                pr = pr.pr_number,
+                sha = &sha[..8],
                 pending = ?pending,
                 "Waiting for checks"
             );
             continue;
         }
 
-        // All completed — check conclusions
         let failed: Vec<String> = checks
             .check_runs
             .iter()
@@ -365,31 +634,35 @@ async fn fail_pr_with_comment(
     db: &Db,
     github: &GitHubClient,
     token: &str,
-    pr: &crate::entity::pull_request::Model,
+    pr: &PrModel,
     message: &str,
 ) {
     service::mark_failed(db, pr, message).await.ok();
     comment(github, token, pr, message).await;
 }
 
-async fn requeue_pr(db: &Db, pr: &crate::entity::pull_request::Model) {
+async fn requeue_pr(db: &Db, pr: &PrModel) {
     use rapina::sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
     let mut active = pr.clone().into_active_model();
     active.status = Set("queued".to_string());
     active.update(db.conn()).await.ok();
 }
 
-async fn comment(
-    github: &GitHubClient,
-    token: &str,
-    pr: &crate::entity::pull_request::Model,
-    body: &str,
-) {
+async fn comment(github: &GitHubClient, token: &str, pr: &PrModel, body: &str) {
     if let Err(e) = github
         .create_issue_comment(token, &pr.repo_owner, &pr.repo_name, pr.pr_number, body)
         .await
     {
         tracing::warn!(pr = pr.pr_number, error = %e, "Failed to post comment");
+    }
+}
+
+async fn close_pr(github: &GitHubClient, token: &str, pr: &PrModel) {
+    if let Err(e) = github
+        .close_pr(token, &pr.repo_owner, &pr.repo_name, pr.pr_number)
+        .await
+    {
+        tracing::warn!(pr = pr.pr_number, error = %e, "Failed to close PR");
     }
 }
 

@@ -15,13 +15,20 @@ Fila solves this by testing the exact merge result before pushing to main. Every
 When someone comments `@fila ship` on a PR:
 
 1. Fila adds the PR to its queue
-2. The runner picks the next PR and creates a temporary `fila/merge` branch from current `main`
-3. It merges the PR into `fila/merge`, producing the exact commit that would land on main
-4. CI runs on `fila/merge` — testing the combined result, not the PR in isolation
-5. If CI passes, Fila fast-forwards `main` to that tested commit
-6. If CI fails, the PR is marked as failed and the author is notified
+2. The runner picks all queued PRs and creates a temporary `fila/merge` branch from current `main`
+3. It merges each PR sequentially into `fila/merge`, producing the exact combined commit that would land on main
+4. CI runs once on `fila/merge` — testing all PRs together, not in isolation
+5. If CI passes, Fila fast-forwards `main` to the tested commit — one build for all queued PRs
+6. If CI fails, all PRs in the batch are marked as failed and the authors are notified
+7. If a PR has a merge conflict, it's skipped and marked as failed — the rest of the batch continues
 
-This is the same approach used by the Rust compiler's merge queue. One PR at a time, each tested against the latest main.
+### Merge strategies
+
+Fila supports two merge strategies, controlled by the `MERGE_STRATEGY` environment variable:
+
+**`batch`** (default) — Merge all queued PRs into `fila/merge` together, run CI once, fast-forward main once. This saves CI runs and deploy costs. If you have 10 PRs queued, that's 1 build instead of 10. The tradeoff: if CI fails, you can't tell which PR broke it — all get failed and authors retry with `@fila ship`.
+
+**`sequential`** — Process one PR at a time, like bors. Each PR is tested against the exact main it will land on. Slower but guarantees isolation. Use this when you need to know exactly which PR broke the build.
 
 ## Commands
 
@@ -57,7 +64,29 @@ Generate a private key and note the App ID.
 
 Install the GitHub App on the repositories you want Fila to manage.
 
-### 3. Configure CI
+### 3. Branch protection
+
+If your `main` branch has branch protection rules (required PRs, required reviews, etc.), you need to add the GitHub App to the **bypass list** so it can fast-forward main after CI passes. Without this, the fast-forward will be rejected by GitHub.
+
+Go to **Settings > Branches > main > Edit** and add your app under "Allow specified actors to bypass required pull requests". Or via API:
+
+```bash
+gh api repos/OWNER/REPO/branches/main/protection -X PUT --input - <<'EOF'
+{
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "bypass_pull_request_allowances": {
+      "apps": ["your-app-slug"]
+    }
+  },
+  "enforce_admins": true,
+  "restrictions": null,
+  "required_status_checks": null
+}
+EOF
+```
+
+### 4. Configure CI
 
 Your CI workflow must run on the `fila/merge` branch. This is the branch where Fila tests merge results:
 
@@ -69,7 +98,7 @@ on:
     branches: [main]
 ```
 
-### 4. Run Fila
+### 5. Run Fila
 
 Fila is a single binary that connects to GitHub via webhooks and stores state in SQLite.
 
@@ -82,6 +111,8 @@ Fila is a single binary that connects to GitHub via webhooks and stores state in
 | `GITHUB_APP_ID` | GitHub App ID | required |
 | `GITHUB_PRIVATE_KEY` | GitHub App private key (PEM contents) | required |
 | `GITHUB_WEBHOOK_SECRET` | Webhook secret | required |
+| `MERGE_STRATEGY` | `batch` (all PRs at once) or `sequential` (one at a time) | `batch` |
+| `BATCH_SIZE` | Max PRs per batch | `5` |
 | `BATCH_INTERVAL_SECS` | How often to check for queued PRs | `10` |
 | `CI_TIMEOUT_SECS` | Max time to wait for CI | `1800` |
 | `POLL_INTERVAL_SECS` | How often to poll CI status | `15` |
@@ -129,7 +160,7 @@ Fila is a single Rust binary built with [Rapina](https://github.com/rapina-rs/ra
 - **SQLite** — stores queue state, batch history, and merge events
 - **GitHub API** — creates merge commits, polls CI, fast-forwards main
 
-The flow is intentionally simple: one PR at a time, sequential processing, no batching. This makes the system predictable and easy to debug.
+The default batch strategy merges all queued PRs together and runs CI once, saving build time and deploy costs. For teams that need strict isolation, the sequential strategy processes one PR at a time.
 
 ## Development
 
