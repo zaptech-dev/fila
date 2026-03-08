@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rapina::prelude::*;
@@ -7,11 +8,14 @@ use fila::config::app::AppConfig;
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-async fn build_test_app() -> TestClient {
+fn next_db_path() -> String {
     let id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let db_path = format!("/tmp/fila_test_{}.db", id);
-    let _ = std::fs::remove_file(&db_path);
+    let path = format!("/tmp/fila_test_{}.db", id);
+    let _ = std::fs::remove_file(&path);
+    path
+}
 
+async fn build_test_app(db_path: &str) -> TestClient {
     let config = AppConfig {
         database_url: format!("sqlite://{}?mode=rwc", db_path),
         server_port: 0,
@@ -27,7 +31,41 @@ async fn build_test_app() -> TestClient {
     TestClient::new(app).await
 }
 
-fn webhook_payload(action: &str, label: &str, pr_number: i32) -> serde_json::Value {
+/// Insert a queued PR directly into the DB for test setup.
+fn insert_test_pr(db_path: &str, pr_number: i32, head_sha: &str) {
+    let sql = format!(
+        "INSERT INTO pull_requests (repo_owner, repo_name, pr_number, title, author, head_sha, status, priority, installation_id, queued_at) VALUES ('test-org', 'test-repo', {}, 'Test PR', 'test-author', '{}', 'queued', 0, 12345, datetime('now'));",
+        pr_number, head_sha
+    );
+    let output = Command::new("sqlite3")
+        .arg(db_path)
+        .arg(&sql)
+        .output()
+        .expect("sqlite3 must be available");
+    assert!(output.status.success(), "sqlite3 insert failed: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+fn comment_payload(body: &str, pr_number: i32) -> serde_json::Value {
+    serde_json::json!({
+        "action": "created",
+        "installation": { "id": 12345 },
+        "repository": {
+            "full_name": "test-org/test-repo",
+            "owner": { "login": "test-org" },
+            "name": "test-repo"
+        },
+        "issue": {
+            "number": pr_number,
+            "pull_request": { "url": "https://api.github.com/repos/test-org/test-repo/pulls/10" }
+        },
+        "comment": {
+            "body": body,
+            "user": { "login": "test-reviewer" }
+        }
+    })
+}
+
+fn pr_event_payload(action: &str, pr_number: i32, head_sha: &str) -> serde_json::Value {
     serde_json::json!({
         "action": action,
         "installation": { "id": 12345 },
@@ -40,56 +78,27 @@ fn webhook_payload(action: &str, label: &str, pr_number: i32) -> serde_json::Val
             "number": pr_number,
             "title": "Test PR",
             "head": {
-                "sha": "abc123",
+                "sha": head_sha,
                 "ref": "feature-branch"
             },
             "user": { "login": "test-author" },
             "state": "open",
             "mergeable": true,
             "labels": []
-        },
-        "label": { "name": label }
+        }
     })
 }
 
 #[tokio::test]
-async fn test_webhook_enqueues_pr() {
-    let client = build_test_app().await;
+async fn test_comment_cancel_dequeues_pr() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+    insert_test_pr(&db_path, 10, "abc123");
 
     let res = client
         .post("/webhooks/github")
-        .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("labeled", "merge", 42))
-        .send()
-        .await;
-    assert_eq!(res.status(), StatusCode::OK);
-
-    let res = client.get("/pull_requests").send().await;
-    assert_eq!(res.status(), StatusCode::OK);
-
-    let prs: Vec<serde_json::Value> = res.json();
-    assert_eq!(prs.len(), 1);
-    assert_eq!(prs[0]["pr_number"], 42);
-    assert_eq!(prs[0]["status"], "queued");
-    assert_eq!(prs[0]["author"], "test-author");
-    assert_eq!(prs[0]["repo_owner"], "test-org");
-}
-
-#[tokio::test]
-async fn test_webhook_dequeues_on_unlabel() {
-    let client = build_test_app().await;
-
-    client
-        .post("/webhooks/github")
-        .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("labeled", "merge", 10))
-        .send()
-        .await;
-
-    let res = client
-        .post("/webhooks/github")
-        .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("unlabeled", "merge", 10))
+        .header("X-GitHub-Event", "issue_comment")
+        .json(&comment_payload("@fila cancel", 10))
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -101,20 +110,15 @@ async fn test_webhook_dequeues_on_unlabel() {
 }
 
 #[tokio::test]
-async fn test_webhook_dequeues_on_close() {
-    let client = build_test_app().await;
-
-    client
-        .post("/webhooks/github")
-        .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("labeled", "merge", 20))
-        .send()
-        .await;
+async fn test_pr_close_dequeues() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+    insert_test_pr(&db_path, 20, "abc123");
 
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("closed", "", 20))
+        .json(&pr_event_payload("closed", 20, "abc123"))
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -126,23 +130,15 @@ async fn test_webhook_dequeues_on_close() {
 }
 
 #[tokio::test]
-async fn test_webhook_updates_sha_on_sync() {
-    let client = build_test_app().await;
-
-    client
-        .post("/webhooks/github")
-        .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("labeled", "merge", 30))
-        .send()
-        .await;
-
-    let mut payload = webhook_payload("synchronize", "", 30);
-    payload["pull_request"]["head"]["sha"] = serde_json::json!("new-sha-456");
+async fn test_pr_sync_updates_sha() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+    insert_test_pr(&db_path, 30, "abc123");
 
     let res = client
         .post("/webhooks/github")
         .header("X-GitHub-Event", "pull_request")
-        .json(&payload)
+        .json(&pr_event_payload("synchronize", 30, "new-sha-456"))
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -155,13 +151,50 @@ async fn test_webhook_updates_sha_on_sync() {
 }
 
 #[tokio::test]
-async fn test_webhook_ignores_non_merge_label() {
-    let client = build_test_app().await;
+async fn test_comment_on_issue_ignored() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+
+    // Comment on a regular issue (no pull_request field)
+    let payload = serde_json::json!({
+        "action": "created",
+        "installation": { "id": 12345 },
+        "repository": {
+            "full_name": "test-org/test-repo",
+            "owner": { "login": "test-org" },
+            "name": "test-repo"
+        },
+        "issue": {
+            "number": 50
+        },
+        "comment": {
+            "body": "@fila ship",
+            "user": { "login": "test-reviewer" }
+        }
+    });
 
     let res = client
         .post("/webhooks/github")
-        .header("X-GitHub-Event", "pull_request")
-        .json(&webhook_payload("labeled", "bug", 50))
+        .header("X-GitHub-Event", "issue_comment")
+        .json(&payload)
+        .send()
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = client.get("/pull_requests").send().await;
+    let prs: Vec<serde_json::Value> = res.json();
+    assert_eq!(prs.len(), 0);
+}
+
+#[tokio::test]
+async fn test_random_comment_ignored() {
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
+
+    let res = client
+        .post("/webhooks/github")
+        .header("X-GitHub-Event", "issue_comment")
+        .json(&comment_payload("looks good to me!", 10))
         .send()
         .await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -173,7 +206,8 @@ async fn test_webhook_ignores_non_merge_label() {
 
 #[tokio::test]
 async fn test_dashboard_returns_html() {
-    let client = build_test_app().await;
+    let db_path = next_db_path();
+    let client = build_test_app(&db_path).await;
 
     let res = client.get("/").send().await;
     assert_eq!(res.status(), StatusCode::OK);

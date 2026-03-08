@@ -77,6 +77,25 @@ pub struct WebhookPayload {
     pub review: Option<WebhookReview>,
     pub check_suite: Option<WebhookCheckSuite>,
     pub label: Option<GhLabel>,
+    pub comment: Option<WebhookComment>,
+    pub issue: Option<WebhookIssue>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebhookComment {
+    pub body: String,
+    pub user: GhUser,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebhookIssue {
+    pub number: i32,
+    pub pull_request: Option<WebhookIssuePr>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebhookIssuePr {
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize)]

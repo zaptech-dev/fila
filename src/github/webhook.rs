@@ -76,6 +76,7 @@ pub async fn handle_webhook(
     match event {
         "pull_request" => handle_pr_event(&payload, &db).await?,
         "pull_request_review" => handle_review_event(&payload, &db).await?,
+        "issue_comment" => handle_comment_event(&payload, &db, &_github).await?,
         "check_suite" => handle_check_suite_event(&payload).await?,
         _ => {
             tracing::debug!(event = event, "Ignoring unhandled event type");
@@ -96,27 +97,8 @@ async fn handle_pr_event(payload: &WebhookPayload, db: &Db) -> std::result::Resu
         .repository
         .as_ref()
         .ok_or_else(|| WebhookError::InvalidPayload("Missing repository".into()).into_api_error())?;
-    let installation_id = payload
-        .installation
-        .as_ref()
-        .map(|i| i.id)
-        .unwrap_or(0);
 
     match payload.action.as_str() {
-        "labeled" => {
-            let label = payload.label.as_ref().map(|l| l.name.as_str());
-            if label == Some("merge") {
-                service::enqueue(db, &repo.owner.login, &repo.name, pr, installation_id).await?;
-                tracing::info!(pr = pr.number, "PR added to merge queue");
-            }
-        }
-        "unlabeled" => {
-            let label = payload.label.as_ref().map(|l| l.name.as_str());
-            if label == Some("merge") {
-                service::dequeue(db, &repo.owner.login, &repo.name, pr.number).await?;
-                tracing::info!(pr = pr.number, "PR removed from merge queue");
-            }
-        }
         "closed" => {
             service::dequeue(db, &repo.owner.login, &repo.name, pr.number).await?;
             tracing::info!(pr = pr.number, "PR closed, removed from queue");
@@ -132,37 +114,74 @@ async fn handle_pr_event(payload: &WebhookPayload, db: &Db) -> std::result::Resu
     Ok(())
 }
 
-async fn handle_review_event(payload: &WebhookPayload, db: &Db) -> std::result::Result<(), Error> {
-    let review = payload
-        .review
-        .as_ref()
-        .ok_or_else(|| WebhookError::InvalidPayload("Missing review".into()).into_api_error())?;
-
-    if review.state != "approved" {
+async fn handle_comment_event(
+    payload: &WebhookPayload,
+    db: &Db,
+    github: &Arc<GitHubClient>,
+) -> std::result::Result<(), Error> {
+    if payload.action != "created" {
         return Ok(());
     }
 
-    let pr = payload
-        .pull_request
+    let comment = payload
+        .comment
         .as_ref()
-        .ok_or_else(|| WebhookError::InvalidPayload("Missing pull_request".into()).into_api_error())?;
+        .ok_or_else(|| WebhookError::InvalidPayload("Missing comment".into()).into_api_error())?;
+    let issue = payload
+        .issue
+        .as_ref()
+        .ok_or_else(|| WebhookError::InvalidPayload("Missing issue".into()).into_api_error())?;
     let repo = payload
         .repository
         .as_ref()
         .ok_or_else(|| WebhookError::InvalidPayload("Missing repository".into()).into_api_error())?;
 
+    // Only handle comments on PRs (issues with a pull_request field)
+    if issue.pull_request.is_none() {
+        return Ok(());
+    }
+
+    let body = comment.body.trim().to_lowercase();
     let installation_id = payload
         .installation
         .as_ref()
         .map(|i| i.id)
         .unwrap_or(0);
 
-    let existing = service::find_queued_pr(db, &repo.owner.login, &repo.name, pr.number).await?;
-    if existing.is_none() {
-        if pr.labels.iter().any(|l| l.name == "merge") {
-            service::enqueue(db, &repo.owner.login, &repo.name, pr, installation_id).await?;
-            tracing::info!(pr = pr.number, "PR auto-enqueued after approval");
-        }
+    if body == "@fila ship" {
+        let token = github
+            .get_installation_token(installation_id)
+            .await
+            .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
+
+        let pr = github
+            .get_pr(&token, &repo.owner.login, &repo.name, issue.number)
+            .await
+            .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
+
+        service::enqueue(db, &repo.owner.login, &repo.name, &pr, installation_id).await?;
+        tracing::info!(pr = issue.number, user = comment.user.login, "PR added to merge queue via comment");
+    } else if body == "@fila cancel" {
+        service::dequeue(db, &repo.owner.login, &repo.name, issue.number).await?;
+        tracing::info!(pr = issue.number, user = comment.user.login, "PR removed from merge queue via comment");
+    }
+
+    Ok(())
+}
+
+async fn handle_review_event(payload: &WebhookPayload, _db: &Db) -> std::result::Result<(), Error> {
+    let review = payload
+        .review
+        .as_ref()
+        .ok_or_else(|| WebhookError::InvalidPayload("Missing review".into()).into_api_error())?;
+
+    if review.state == "approved" {
+        let pr = payload.pull_request.as_ref();
+        tracing::info!(
+            pr = pr.map(|p| p.number),
+            reviewer = review.user.login,
+            "PR approved"
+        );
     }
 
     Ok(())
