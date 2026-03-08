@@ -15,6 +15,13 @@ use crate::types::PrStatus;
 
 const PAGE_SIZE: u64 = 50;
 
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 #[derive(serde::Deserialize)]
 struct DashboardQuery {
     page: Option<u64>,
@@ -141,7 +148,7 @@ pub async fn dashboard(db: Db, query: Query<DashboardQuery>) -> Result<Response<
                 "<tr><td class=\"mono\"><a href=\"https://github.com/{}/{}/pull/{}\" target=\"_blank\">{}</a></td><td><span class=\"status status-{}\">{}</span></td><td>{}</td><td>{}</td><td>{}</td><td class=\"mono\"><a href=\"https://github.com/{}/{}/commit/{}\" target=\"_blank\">{}</a></td><td class=\"mono\">{}</td></tr>",
                 pr.repo_owner, pr.repo_name, pr.pr_number, pr.pr_number,
                 pr.status, pr.status,
-                pr.title, pr.author, approved,
+                escape_html(&pr.title), escape_html(&pr.author), escape_html(approved),
                 pr.repo_owner, pr.repo_name, pr.head_sha, short_sha,
                 time_col,
             ));
