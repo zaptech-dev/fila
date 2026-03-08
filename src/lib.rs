@@ -1,4 +1,3 @@
-pub mod batch;
 mod batches;
 pub mod config;
 pub mod dashboard;
@@ -22,13 +21,12 @@ mod migrations;
 use config::app::AppConfig;
 use github::client::GitHubClient;
 
-pub async fn build_app(config: AppConfig, enable_tracing: bool) -> Rapina {
+pub async fn build_app(
+    config: AppConfig,
+    github: Arc<GitHubClient>,
+    enable_tracing: bool,
+) -> Rapina {
     let db_config = DatabaseConfig::new(&config.database_url);
-
-    let github = Arc::new(GitHubClient::new(
-        config.github_app_id.clone(),
-        config.github_private_key.clone(),
-    ));
 
     let mut app = Rapina::new()
         .middleware(RequestLogMiddleware::new())
