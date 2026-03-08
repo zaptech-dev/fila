@@ -255,6 +255,195 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Get a git reference SHA.
+    pub async fn get_ref(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        git_ref: &str,
+    ) -> Result<String, GitHubClientError> {
+        let r: GhRef = self
+            .get(token, &format!("/repos/{owner}/{repo}/git/ref/{git_ref}"))
+            .await?;
+        Ok(r.object.sha)
+    }
+
+    /// Create a new git reference.
+    pub async fn create_ref(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        git_ref: &str,
+        sha: &str,
+    ) -> Result<(), GitHubClientError> {
+        let body = serde_json::json!({
+            "ref": format!("refs/{git_ref}"),
+            "sha": sha,
+        });
+
+        let resp = self
+            .client
+            .post(format!("{GITHUB_API}/repos/{owner}/{repo}/git/refs"))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GitHubClientError::Api(format!(
+                "Create ref failed: {status} {text}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Update a git reference to a new SHA.
+    pub async fn update_ref(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        git_ref: &str,
+        sha: &str,
+        force: bool,
+    ) -> Result<(), GitHubClientError> {
+        let body = serde_json::json!({
+            "sha": sha,
+            "force": force,
+        });
+
+        let resp = self
+            .client
+            .patch(format!(
+                "{GITHUB_API}/repos/{owner}/{repo}/git/refs/{git_ref}"
+            ))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GitHubClientError::Api(format!(
+                "Update ref failed: {status} {text}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Ensure a git reference exists at the given SHA.
+    /// Tries update first (force), falls back to create if the ref doesn't exist.
+    pub async fn ensure_ref(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        git_ref: &str,
+        sha: &str,
+    ) -> Result<(), GitHubClientError> {
+        match self
+            .update_ref(token, owner, repo, git_ref, sha, true)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(GitHubClientError::Api(msg)) if msg.contains("422") => {
+                self.create_ref(token, owner, repo, git_ref, sha).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Create a merge commit via the GitHub API.
+    pub async fn create_merge(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+        message: &str,
+    ) -> Result<MergeResult, GitHubClientError> {
+        let body = serde_json::json!({
+            "base": base,
+            "head": head,
+            "commit_message": message,
+        });
+
+        let resp = self
+            .client
+            .post(format!("{GITHUB_API}/repos/{owner}/{repo}/merges"))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        match status {
+            201 => {
+                let commit: GhMergeCommit = resp
+                    .json()
+                    .await
+                    .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+                Ok(MergeResult::Created(commit.sha))
+            }
+            204 => Ok(MergeResult::AlreadyMerged),
+            409 => Ok(MergeResult::Conflict),
+            _ => {
+                let text = resp.text().await.unwrap_or_default();
+                Err(GitHubClientError::Api(format!(
+                    "Merge failed: {status} {text}"
+                )))
+            }
+        }
+    }
+
+    /// Post a comment on an issue/PR.
+    pub async fn create_issue_comment(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        body: &str,
+    ) -> Result<(), GitHubClientError> {
+        let payload = serde_json::json!({ "body": body });
+
+        let resp = self
+            .client
+            .post(format!(
+                "{GITHUB_API}/repos/{owner}/{repo}/issues/{number}/comments"
+            ))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GitHubClientError::Api(format!(
+                "Comment failed: {status} {text}"
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Check if all check runs for a commit have passed.
     pub async fn all_checks_passed(
         &self,

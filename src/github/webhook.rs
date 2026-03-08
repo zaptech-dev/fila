@@ -164,6 +164,33 @@ async fn handle_comment_event(
             user = comment.user.login,
             "PR removed from merge queue via comment"
         );
+    } else if body == "@fila status" {
+        let token = github
+            .get_installation_token(installation_id)
+            .await
+            .map_err(|e| WebhookError::InvalidPayload(e.to_string()).into_api_error())?;
+
+        let queue = service::get_queue(db).await?;
+        let reply = if queue.is_empty() {
+            "Queue is empty.".to_string()
+        } else {
+            let mut lines = vec![format!("**Queue ({} PRs):**", queue.len())];
+            for (i, pr) in queue.iter().enumerate() {
+                lines.push(format!(
+                    "{}. #{} — {} (`{}`, {})",
+                    i + 1,
+                    pr.pr_number,
+                    pr.title,
+                    pr.status,
+                    pr.repo_name
+                ));
+            }
+            lines.join("\n")
+        };
+
+        let _ = github
+            .create_issue_comment(&token, &repo.owner.login, &repo.name, issue.number, &reply)
+            .await;
     }
 
     Ok(())

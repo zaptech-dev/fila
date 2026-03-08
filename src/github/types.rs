@@ -61,6 +61,27 @@ pub struct GhInstallationToken {
     pub expires_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GhRef {
+    pub object: GhRefObject,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhRefObject {
+    pub sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GhMergeCommit {
+    pub sha: String,
+}
+
+pub enum MergeResult {
+    Created(String),
+    AlreadyMerged,
+    Conflict,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GhCommitStatus {
     pub state: String,
