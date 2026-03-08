@@ -65,8 +65,8 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
             let short_sha = &pr.head_sha[..7.min(pr.head_sha.len())];
             let approved = pr.approved_by.as_deref().unwrap_or("\u{2014}");
             html.push_str(&format!(
-                "<tr><td class=\"mono\">#{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"mono\">{}</td><td><span class=\"status status-queued\">queued</span></td><td class=\"mono\">{}</td></tr>",
-                pr.pr_number, pr.title, pr.author, approved, short_sha, time_in_queue,
+                "<tr><td class=\"mono\"><a href=\"https://github.com/{}/{}/pull/{}\" target=\"_blank\">#{}</a></td><td>{}</td><td>{}</td><td>{}</td><td class=\"mono\"><a href=\"https://github.com/{}/{}/commit/{}\" target=\"_blank\">{}</a></td><td><span class=\"status status-queued\">queued</span></td><td class=\"mono\">{}</td></tr>",
+                pr.repo_owner, pr.repo_name, pr.pr_number, pr.pr_number, pr.title, pr.author, approved, pr.repo_owner, pr.repo_name, pr.head_sha, short_sha, time_in_queue,
             ));
         }
         html.push_str("</tbody></table>");
@@ -84,8 +84,8 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
             let short_sha = &pr.head_sha[..7.min(pr.head_sha.len())];
             let approved = pr.approved_by.as_deref().unwrap_or("\u{2014}");
             html.push_str(&format!(
-                "<tr><td class=\"mono\">#{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"mono\">{}</td><td><span class=\"status status-testing\">testing</span></td></tr>",
-                pr.pr_number, pr.title, pr.author, approved, short_sha,
+                "<tr><td class=\"mono\"><a href=\"https://github.com/{}/{}/pull/{}\" target=\"_blank\">#{}</a></td><td>{}</td><td>{}</td><td>{}</td><td class=\"mono\"><a href=\"https://github.com/{}/{}/commit/{}\" target=\"_blank\">{}</a></td><td><span class=\"status status-testing\">testing</span></td></tr>",
+                pr.repo_owner, pr.repo_name, pr.pr_number, pr.pr_number, pr.title, pr.author, approved, pr.repo_owner, pr.repo_name, pr.head_sha, short_sha,
             ));
         }
         html.push_str("</tbody></table>");
@@ -190,6 +190,8 @@ tr:hover td { background: #fafafa; }
 .status-pending { background: #e0e7ff; color: #3730a3; }
 .status-testing { background: #fef3c7; color: #92400e; }
 .status-done { background: #d1fae5; color: #065f46; }
+a { color: #1e40af; text-decoration: none; }
+a:hover { text-decoration: underline; }
 .empty { color: #999; font-style: italic; padding: 1rem 0; }
 .updated { font-size: 0.75rem; color: #999; margin-top: 2rem; }
 </style>
