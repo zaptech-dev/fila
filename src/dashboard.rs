@@ -49,7 +49,7 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
     html.push_str(HEADER);
 
     // Queue section
-    html.push_str("<h2>Queue</h2>");
+    html.push_str("<div id=\"section-queue\"><h2>Queue</h2>");
     if queued.is_empty() {
         html.push_str("<p class=\"empty\">No PRs in queue.</p>");
     } else {
@@ -71,9 +71,10 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
         }
         html.push_str("</tbody></table>");
     }
+    html.push_str("</div>");
 
     // In Progress section
-    html.push_str("<h2>In Progress</h2>");
+    html.push_str("<div id=\"section-testing\"><h2>In Progress</h2>");
     if testing.is_empty() {
         html.push_str("<p class=\"empty\">No PRs currently testing.</p>");
     } else {
@@ -90,9 +91,10 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
         }
         html.push_str("</tbody></table>");
     }
+    html.push_str("</div>");
 
     // Batches section
-    html.push_str("<h2>Recent Batches</h2>");
+    html.push_str("<div id=\"section-batches\"><h2>Recent Batches</h2>");
     if batches.is_empty() {
         html.push_str("<p class=\"empty\">No batches yet.</p>");
     } else {
@@ -110,9 +112,10 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
         }
         html.push_str("</tbody></table>");
     }
+    html.push_str("</div>");
 
     // Recent Activity section
-    html.push_str("<h2>Recent Activity</h2>");
+    html.push_str("<div id=\"section-events\"><h2>Recent Activity</h2>");
     if events.is_empty() {
         html.push_str("<p class=\"empty\">No events yet.</p>");
     } else {
@@ -130,6 +133,7 @@ pub async fn dashboard(db: Db) -> Result<Response<BoxBody>> {
         }
         html.push_str("</tbody></table>");
     }
+    html.push_str("</div>");
 
     html.push_str(FOOTER);
 
@@ -203,22 +207,22 @@ a:hover { text-decoration: underline; }
 const FOOTER: &str = r#"<p class="updated" id="updated"></p>
 <script>
 (function() {
-  var interval = 5000;
+  var ids = ['section-queue', 'section-testing', 'section-batches', 'section-events'];
   function refresh() {
     fetch(window.location.href, { headers: { 'Accept': 'text/html' } })
       .then(function(r) { return r.text(); })
       .then(function(html) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
-        var sections = doc.querySelectorAll('h2, table, p.empty');
-        var current = document.querySelectorAll('h2, table, p.empty');
-        sections.forEach(function(el, i) {
-          if (current[i]) current[i].replaceWith(el.cloneNode(true));
+        ids.forEach(function(id) {
+          var fresh = doc.getElementById(id);
+          var current = document.getElementById(id);
+          if (fresh && current) current.innerHTML = fresh.innerHTML;
         });
         document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
       })
       .catch(function() {});
   }
-  setInterval(refresh, interval);
+  setInterval(refresh, 5000);
 })();
 </script>
 </body>
