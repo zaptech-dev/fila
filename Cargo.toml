@@ -26,5 +26,8 @@ hex = "0.4.3"
 jsonwebtoken = "9"
 base64 = "0.22"
 
+# CLI
+clap = { version = "4", features = ["derive"] }
+
 
 

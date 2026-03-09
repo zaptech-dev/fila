@@ -136,10 +136,48 @@ GITHUB_WEBHOOK_SECRET=your-secret
 ```
 
 ```bash
-cargo run
+fila
 ```
 
 The dashboard is available at `http://localhost:8000/`.
+
+### CLI
+
+Fila includes built-in commands to help with setup and troubleshooting:
+
+```bash
+fila              # start the server (default, same as before)
+fila doctor       # validate config, database connection, and GitHub auth
+fila setup        # interactive wizard that creates a .env file
+```
+
+**`fila doctor`** reads each environment variable individually and reports what's present, what's missing, and what's broken — without starting the server. It validates your private key is valid RSA PEM, tests database connectivity, and verifies GitHub API authentication by hitting `GET /app`. Exit code 0 means everything is good, 1 means something needs attention.
+
+```
+$ fila doctor
+
+.env file                found
+DATABASE_URL             set
+GITHUB_APP_ID            set
+GITHUB_PRIVATE_KEY       set
+GITHUB_WEBHOOK_SECRET    set
+
+SERVER_PORT              8000
+HOST                     127.0.0.1
+MERGE_STRATEGY           batch
+BATCH_SIZE               5
+BATCH_INTERVAL_SECS      10
+CI_TIMEOUT_SECS          1800
+POLL_INTERVAL_SECS       15
+
+Private key              valid RSA PEM
+Database                 connected (sqlite)
+GitHub API               authenticated as "my-merge-queue"
+
+All checks passed.
+```
+
+**`fila setup`** walks you through creating a `.env` file. It prompts for each value with sensible defaults, reads your private key from a file path, and writes everything properly formatted. Run `fila doctor` after to verify.
 
 ### Deploy
 

@@ -475,6 +475,38 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Validate that the private key can produce a JWT.
+    pub fn validate_credentials(&self) -> Result<(), GitHubClientError> {
+        let _ = self.generate_jwt()?;
+        Ok(())
+    }
+
+    /// Fetch app info from GitHub using JWT auth (no installation token needed).
+    pub async fn get_app_info(&self) -> Result<GhAppInfo, GitHubClientError> {
+        let jwt = self.generate_jwt()?;
+
+        let resp = self
+            .client
+            .get(format!("{GITHUB_API}/app"))
+            .header(AUTHORIZATION, format!("Bearer {jwt}"))
+            .header(ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubClientError::Api(format!(
+                "GET /app failed: {status} {body}"
+            )));
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| GitHubClientError::Http(e.to_string()))
+    }
+
     /// Check if all check runs for a commit have passed.
     pub async fn all_checks_passed(
         &self,
