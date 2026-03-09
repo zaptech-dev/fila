@@ -594,10 +594,22 @@ async fn poll_checks(
             continue;
         }
 
-        let all_completed = checks.check_runs.iter().all(|c| c.status == "completed");
+        // Deduplicate check runs by name, keeping the latest (highest ID).
+        // GitHub can produce duplicate runs (e.g. from re-triggers) where
+        // an older run stays "in_progress" forever while the newer one completed.
+        let mut latest: std::collections::HashMap<&str, &crate::github::types::GhCheckRun> =
+            std::collections::HashMap::new();
+        for run in &checks.check_runs {
+            let entry = latest.entry(run.name.as_str()).or_insert(run);
+            if run.id > entry.id {
+                *entry = run;
+            }
+        }
+        let deduped: Vec<&&crate::github::types::GhCheckRun> = latest.values().collect();
+
+        let all_completed = deduped.iter().all(|c| c.status == "completed");
         if !all_completed {
-            let pending: Vec<&str> = checks
-                .check_runs
+            let pending: Vec<&str> = deduped
                 .iter()
                 .filter(|c| c.status != "completed")
                 .map(|c| c.name.as_str())
@@ -610,8 +622,7 @@ async fn poll_checks(
             continue;
         }
 
-        let failed: Vec<String> = checks
-            .check_runs
+        let failed: Vec<String> = deduped
             .iter()
             .filter(|c| {
                 !matches!(
