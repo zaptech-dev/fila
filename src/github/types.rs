@@ -37,6 +37,7 @@ pub struct GhCheckRunsResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct GhCheckRun {
+    pub id: u64,
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
